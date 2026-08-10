@@ -619,7 +619,6 @@ function buildSprites() {
 const Sound = {
   ctx: null, master: null, muted: false,
   siren: null, sirenGain: null, sirenNext: 0, sirenLevel: 0, sirenOn: false,
-  frightLoop: null, eyesLoop: null,
   chompFlip: false,
 
   ensure() {
@@ -991,7 +990,7 @@ class Hunter {
   }
 
   /* struck while frightened */
-  dissolve(game) {
+  dissolve() {
     this.state = 'dissolving';
     this.dissolveT = 0;
     this.path = null;
@@ -1196,15 +1195,6 @@ const Draw = {
 
 /* --- path geometry helpers for rendering --- */
 
-/* flatten a tile path to px points (handles tunnel wrap discontinuities) */
-function pathPoints(tiles) {
-  const pts = [];
-  for (let i = 0; i < tiles.length; i++) {
-    const t = tiles[i];
-    pts.push({ x: tcx(t.c), y: tcy(t.r) });
-  }
-  return pts;
-}
 /* walk `dist` px along a polyline of tile centers; returns {x,y} or null.
    Segments that jump across the tunnel are skipped visually. */
 function pointAlong(tiles, dist) {
@@ -1402,9 +1392,10 @@ class Evader {
     const fright = game.frightT > 0;
     const t = this.tile();
     const inTunnel = TUNNEL_ROWS.includes(t.r) && (t.c < 5 || t.c > 22);
-    this.speed = fright ? game.params.evaderFrightSpeed
+    const boost = game.evaderBoostT > 0 ? 1.12 : 1;
+    this.speed = boost * (fright ? game.params.evaderFrightSpeed
                : inTunnel ? game.params.evaderSpeed          // he owns the tunnels
-               : game.params.evaderSpeed * (1 + game.boldness(game) * 0.06);
+               : game.params.evaderSpeed * (1 + game.boldness() * 0.06));
     const moved = stepEntity(this, (e, ws) => this.decide(game, ws));
     if (moved && this.animT % 4 === 0) this.frame = (this.frame + 1) % 4;
 
@@ -1420,7 +1411,7 @@ class Evader {
         if (d === 2) game.triggerFright();
       }
       if (game.fruit && tt.r === FRUIT_TILE.r && (tt.c === 13 || tt.c === 14)) {
-        game.eatFruit();
+        game.takeFruit(false);
       }
     }
   }
@@ -1434,8 +1425,6 @@ class Evader {
 
     if (this.feintT > 0) this.feintT--;
 
-    const futures = game.hunterFutures;
-    const distGrids = game.hunterDistGrids;
     const myTicksPerTile = TILE / this.speed;
 
     // immediate danger? then reversal is allowed
@@ -1602,6 +1591,8 @@ const game = {
   frightPulseT: 0,
   dotsEaten: 0,
   fruit: null,          // {idx, timer}
+  lastFruitAt: -1,
+  evaderBoostT: 0,      // ticks of stolen-prize speed left to him
   fruitHistory: [],
   hunters: [],
   evader: null,
@@ -1637,6 +1628,8 @@ const game = {
     this.params = levelParams(this.level);
     if (rebuildDots) { buildMaze(); this.dotsEaten = 0; }
     this.resetActors();
+    this.lastFruitAt = -1;
+    this.evaderBoostT = 0;
     this.phase = 'ready';
     this.phaseT = 0;
     this.demo = false;
@@ -1677,12 +1670,21 @@ const game = {
     // frightened hunters do NOT reverse or flee by themselves: your problem
   },
 
-  eatFruit() {
+  /* The prize under the den is contested: route a hunter over it and it is
+     ours, let him reach it first and he pockets it and gets a burst of
+     speed. It gives the drawing a second thing to be about. */
+  takeFruit(byHunter) {
     if (!this.fruit) return;
     const pts = FRUIT_POINTS[this.fruit.idx % FRUIT_POINTS.length];
-    this.popup(DEN_EXIT_X, tcy(FRUIT_TILE.r), 'HE TOOK THE PRIZE', PAL.magenta);
     this.fruit = null;
     Sound.fruit();
+    if (byHunter) {
+      this.addScore(pts);
+      this.popup(DEN_EXIT_X, tcy(FRUIT_TILE.r), String(pts), PAL.cyan);
+    } else {
+      this.evaderBoostT = 300;
+      this.popup(DEN_EXIT_X, tcy(FRUIT_TILE.r), 'HE TOOK IT', PAL.magenta);
+    }
   },
 
   spawnFruitMaybe() {
@@ -1690,11 +1692,10 @@ const game = {
       if (--this.fruit.timer <= 0) this.fruit = null;
       return;
     }
-    if (this.dotsEaten === 70 || this.dotsEaten === 170) {
-      if (this.lastFruitAt !== this.dotsEaten) {
-        this.lastFruitAt = this.dotsEaten;
-        this.fruit = { idx: (this.level - 1) % FRUIT_ART.length, timer: 600 };
-      }
+    if ((this.dotsEaten === 70 || this.dotsEaten === 170)
+        && this.lastFruitAt !== this.dotsEaten) {
+      this.lastFruitAt = this.dotsEaten;
+      this.fruit = { idx: (this.level - 1) % FRUIT_ART.length, timer: 600 };
     }
   },
 
@@ -1720,7 +1721,7 @@ const game = {
       if (!touching) continue;
       if (this.frightT > 0) {
         // he eats our hunter
-        h.dissolve(this);
+        h.dissolve();
         Sound.hunterLost();
         this.popup(h.x, h.y - 6, h.def.name + ' DOWN', PAL.fright);
         this.shakeT = 10;
@@ -1834,6 +1835,17 @@ const game = {
     if (this.phase !== 'play') return;
 
     this.spawnFruitMaybe();
+    if (this.fruit) {
+      for (const h of this.hunters) {
+        if (h.state !== 'active') continue;
+        const ht = h.tile();
+        if (ht.r === FRUIT_TILE.r && (ht.c === 13 || ht.c === 14)) {
+          this.takeFruit(true);
+          break;
+        }
+      }
+    }
+    if (this.evaderBoostT > 0) this.evaderBoostT--;
     this.pressureScore();
     Sound.tickSiren(this.sirenStage());
 
