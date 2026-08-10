@@ -35,6 +35,26 @@ cursor tile by tile through the corridors, orthogonally, refusing walls. Drag
 into a wall and the tip waits at the last legal tile until you move somewhere
 it can reach. It may cross itself as often as you like.
 
+This matters more than it sounds. An earlier version quietly pathfound to
+wherever your cursor was, and dragging straight down a walled column turned a
+fourteen-tile order into a forty-tile horseshoe — which, at this resolution,
+looks much like the line you meant to draw until you unfreeze and watch a
+ghost set off the wrong way. The tip now only ever takes one legal step at a
+time toward your cursor, and stalls rather than inventing a detour.
+
+### Timing beads
+
+Every drawn path is marked at equal *travel time*, not equal distance. Where
+two hunters' beads coincide in both time and space, both light up white —
+that's the instrument for timing a four-way pincer. Count beads, not tiles.
+
+### The run-out
+
+An open path shows a sparse continuation past its arrowhead: the coast a
+hunter makes on its last heading after the order ends, and the tile a wall
+will actually stop it on. The rule isn't softened, it's just no longer a
+surprise.
+
 ## The rule that makes it a game
 
 **A ghost with no order is stupid.** It continues in its current direction
@@ -49,12 +69,10 @@ Command one ghost at a time and you will lose. The scoring knows the
 difference: you're paid for proximity pressure and for closing multiple bodies
 onto one point from multiple directions, not just for the kill.
 
-### Timing beads
-
-Every drawn path is dotted with tick marks at equal *travel time*. Beads that
-light up white are moments where two ghosts' paths coincide in both time and
-space — that's the instrument for timing a four-way pincer. Count the beads,
-not the distance.
+Your ghosts are *not* slower than him in any meaningful way — they run at
+near parity. Their handicap is that they cannot improvise. He re-decides at
+every junction and can read the orders you've already committed; your four
+walk exactly what you drew and nothing else. That asymmetry is the game.
 
 ### Energizers invert
 
@@ -102,6 +120,33 @@ hardware constraints the real cabinets had:
 The role reversal is wired through the audio too: the death spiral now plays
 when *we* lose a hunter, and the siren's rising pitch is a threat clock
 counting down our board.
+
+## Tests
+
+No framework, no install. `test/harness.js` boots `game.js` in Node behind a
+stub DOM, so the whole game can be exercised headlessly in about a second.
+
+```bash
+node test/test-game.js && node test/validate-maze.js && node test/no-infinite-lanes.js && node test/palette-lock.js
+```
+
+- **test-game.js** — 34 checks: path retraction, loop closure, self-crossing,
+  the refusal to reroute, orders queued from the den, the wall-stop rule, the
+  energizer role reversal, eyes and respawn, capture and pincer scoring, board
+  loss, level flow, and a 30,000-tick soak.
+- **validate-maze.js** — proves the board is mirror-symmetric, fully
+  connected, and free of dead ends and 2×2 rooms.
+- **no-infinite-lanes.js** — walks all 1,328 straight runs on the board and
+  proves every one ends at a wall. Without this the wall-stop rule can be
+  silently cancelled by a corridor that wraps the full width, which is exactly
+  what the first version of the maze did.
+- **palette-lock.js** — fails on any color off the ladder, any enabled image
+  smoothing, or any sprite blitted at a scale other than 1:1. Resampling
+  invents colors that were never in the palette.
+- **speed-audit.js** / **difficulty-curve.js** — measure what the tuning
+  tables actually produce: tiles covered per second by each side, and win
+  rates for a coordinating player versus a one-ghost-at-a-time player across
+  levels 1–20.
 
 ## Credits
 
