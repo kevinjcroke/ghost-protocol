@@ -54,8 +54,8 @@ const PAL = {
   /* second hardware palette bank, used when time is frozen. A real board
      swapped palette entries; it could not alpha-blend a framebuffer. */
   wallDim: '#002197',
-  dotDim:  '#975151',
-  doorDim: '#974751',
+  dotDim:  '#C89751',   // one ladder step down per channel: dims without hue shift
+  doorDim: '#975147',
 };
 PAL.frightW = PAL.white;   // the flash is plain white, not a second near-white
 
@@ -423,6 +423,23 @@ function renderHunterFrame(color, frame, dir, mode) {
     }
   }
   if (mode === 'fright' || mode === 'frightFlash') {
+    /* Outline the frightened body. Its blue sits close to the maze blue by
+       design -- the era relied on the same trick -- but without an outline
+       the skirt welds itself to the wall stroke underneath and the
+       silhouette dissolves exactly when the player needs to track four of
+       them at once. */
+    if (mode === 'fright') {
+      g.fillStyle = PAL.peach;
+      for (let y = 0; y < grid.length; y++) {
+        for (let x = 0; x < grid[y].length; x++) {
+          if (grid[y][x] === '#') continue;
+          const near = (yy, xx) => grid[yy] && grid[yy][xx] === '#';
+          if (near(y - 1, x) || near(y + 1, x) || near(y, x - 1) || near(y, x + 1)) {
+            g.fillRect(ox + x, oy + y, 1, 1);
+          }
+        }
+      }
+    }
     g.fillStyle = (mode === 'fright') ? PAL.peach : PAL.red;
     FRIGHT_FACE.forEach(e => g.fillRect(ox + e.x, oy + e.y, e.w, e.h));
     FRIGHT_MOUTH.forEach(mx => {
@@ -1161,6 +1178,34 @@ const BEAD_TICKS = 15;
 const Draw = {
   active: null,     // { hunter, tiles:[{c,r}], closable }
   erase: null,      // { hunter } during right-drag erase
+  selected: 0,      // roster slot the number keys point at
+  lastPicked: -1,   // for cycling through a stack of ghosts on one tile
+
+  /* Ghosts pile up -- three of them leave the den on the same tile, and a
+     click can only ever land on one. So clicking a stack cycles through it,
+     and every ghost keeps a permanent number that selects it outright. */
+  pickAt(px, py) {
+    const near = [];
+    game.hunters.forEach((h, i) => {
+      if (!h.isCommandable()) return;
+      const dx = h.x - px, dy = h.y - py;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 144) near.push({ h, i, d2 });
+    });
+    if (!near.length) return null;
+    near.sort((a, b) => a.d2 - b.d2);
+    // if several are stacked here, take the one after whoever we took last
+    const stacked = near.filter(n => n.d2 < 64);
+    const pool = stacked.length > 1 ? stacked : near;
+    let choice = pool[0];
+    if (pool.length > 1) {
+      const at = pool.findIndex(n => n.i === this.lastPicked);
+      choice = pool[(at + 1) % pool.length];
+    }
+    this.lastPicked = choice.i;
+    this.selected = choice.i;
+    return choice.h;
+  },
 
   begin(hunter) {
     const t = hunter.tile();
@@ -1570,8 +1615,13 @@ class Evader {
       if (s > bestScore) { second = best; secondScore = bestScore; best = o; bestScore = s; }
       else if (s > secondScore) { second = o; secondScore = s; }
     }
-    // gamble/feint: when comfortable, sometimes take the second-best line
-    if (second && bestScore < 900
+    /* Feint: when two lines are nearly as good AND he is comfortable, take
+       the second one -- it reads as a juke at a junction. It must never fire
+       under pressure. Gambling while threatened is not cunning, it is noise,
+       and it made him play worse at exactly the levels where he is supposed
+       to feel like he is reading your mind. */
+    const comfortable = bestScore > 140;
+    if (second && comfortable && bestScore < 900
         && bestScore - secondScore < 6
         && this.rnd() < game.params.gamble && this.feintT === 0) {
       best = second;
@@ -2075,7 +2125,7 @@ const input = {
   dragOrigin: null, dragMoved: false,
 };
 
-let screenCanvas, screenCtx, native, nativeCtx, scale = 2, offX = 0, offY = 0;
+let screenCanvas, screenCtx, native, nativeCtx, dotScratch, scale = 2;
 let scanlines = null, vignette = null;
 
 function toNative(ev) {
@@ -2114,6 +2164,23 @@ function bindInput() {
       else if (game.phase === 'command') resumeFromCommand();
     } else if (ev.code === 'Escape') {
       resumeFromCommand();
+    } else if (ev.code >= 'Digit1' && ev.code <= 'Digit4') {
+      // pick a ghost by number, even if it is buried under the other three
+      const i = Number(ev.code.slice(5)) - 1;
+      if (game.hunters[i] && game.hunters[i].isCommandable()) {
+        if (game.phase === 'play') pauseToCommand();
+        Draw.selected = i;
+        Draw.lastPicked = i;
+      }
+    } else if (ev.code === 'Tab') {
+      ev.preventDefault();
+      if (game.phase === 'command' || game.phase === 'play') {
+        if (game.phase === 'play') pauseToCommand();
+        for (let n = 1; n <= 4; n++) {
+          const i = (Draw.selected + n) % game.hunters.length;
+          if (game.hunters[i].isCommandable()) { Draw.selected = i; Draw.lastPicked = i; break; }
+        }
+      }
     } else if (ev.code === 'KeyM') {
       Sound.muted = !Sound.muted;
       Sound.setSirenAudible(!Sound.muted && game.phase === 'play' && game.frightT <= 0);
@@ -2136,18 +2203,17 @@ function bindInput() {
     input.dragOrigin = { x: p.x, y: p.y };
     input.dragMoved = false;
     if (game.phase !== 'play' && game.phase !== 'command') return;
-    // pick a hunter under the cursor
-    let best = null;
-    for (const h of game.hunters) {
-      if (!h.isCommandable()) continue;
-      const dx = h.x - p.x, dy = h.y - p.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < 144 && (!best || d2 < best.d2)) best = { h, d2 };
-    }
+    const picked = Draw.pickAt(p.x, p.y);
     // grabbing a ghost mid-play stops the clock by itself: that is the
     // whole control scheme, and it has to be discoverable by grabbing one
-    if (best && game.phase === 'play') pauseToCommand();
-    if (best && game.phase === 'command') Draw.begin(best.h);
+    if (picked && game.phase === 'play') pauseToCommand();
+    if (picked && game.phase === 'command') Draw.begin(picked);
+    else if (!picked && game.phase === 'command') {
+      // clicking open floor draws for whoever the roster has selected, so a
+      // buried ghost is still reachable
+      const sel = game.hunters[Draw.selected];
+      if (sel && sel.isCommandable()) Draw.begin(sel);
+    }
   });
   window.addEventListener('mousemove', (ev) => {
     const p = toNative(ev);
@@ -2236,15 +2302,18 @@ function drawHUD(g) {
   drawText(g, sc.padStart(7, ' '), 0, 8, PAL.white);
   const hs = game.high === 0 ? '00' : String(game.high);
   drawText(g, hs.padStart(7, ' '), 72, 8, PAL.white);
-  // bottom: remaining boards, and one badge per level reached (newest right)
-  const by = (HUD_TOP + MAZE_ROWS) * TILE + 4;
+  /* The status row sits on whole tiles like everything else on the board.
+     Packing icons at their content width put them at x=26 and x=36, which no
+     tile pointer can address -- and it read as a modern layout function
+     sitting two rows under a perfect character grid. */
+  const by = (HUD_TOP + MAZE_ROWS) * TILE;
   for (let i = 0; i < Math.max(0, game.contracts); i++) {
-    g.drawImage(SPRITES.minis[HUNTER_DEFS[0].key], 16 + i * 10, by);
+    g.drawImage(SPRITES.minis[HUNTER_DEFS[0].key], (2 + i) * TILE, by);
   }
-  const shown = Math.min(game.level, 7);
+  const shown = Math.min(game.level, 6);
   for (let i = 0; i < shown; i++) {
     const idx = (game.level - shown + i) % FRUIT_ART.length;
-    g.drawImage(SPRITES.fruit[idx], NATIVE_W - 20 - (shown - 1 - i) * 13, by - 6);
+    g.drawImage(SPRITES.fruit[idx], (COLS - 2 - (shown - i) * 2) * TILE, by - 4);
   }
 }
 
@@ -2260,28 +2329,10 @@ function drawCommandOverlay(g) {
   }
   const blink = (uiFrame / 20 | 0) % 2 === 0;
 
-  // trails
-  const hot = computeHotBeads(game);
+  /* The order trails themselves are not drawn here. They belong to the
+     command layer, which is rendered above the glass at display resolution
+     -- see drawOrderLayer. The board is 1981; the orders are not. */
   game.hunters.forEach((h, i) => {
-    const isDrawing = Draw.active && Draw.active.hunter === h;
-    const spacing = Math.max(2, game.params.hunterSpeed * BEAD_TICKS);
-    // each hunter's dashes sit on a different phase, so where two trails
-    // share a corridor you see both colours instead of only the last drawn
-    const ants = -(uiFrame >> 2) + i * 2;
-    if (isDrawing) {
-      drawTrail(g, Draw.active.tiles, h.color, {
-        ants, closable: Draw.active.closable,
-        runOut: runOutFrom(Draw.active.tiles),
-        beads: { spacing, count: 60, hot: hot[i] && hot[i].hot },
-      });
-    } else if (h.path) {
-      const tiles = h.path.tiles.slice(Math.max(0, h.path.idx - 1));
-      drawTrail(g, h.path.closed ? h.path.tiles : tiles, h.color, {
-        closed: h.path.closed, ants,
-        runOut: h.path.closed ? null : runOutFrom(h.path.tiles),
-        beads: { spacing, count: 60, hot: hot[i] && hot[i].hot },
-      });
-    }
     // ring the commandable hunters; mark the parked-and-stupid ones
     if (h.isCommandable()) {
       const hx = Math.round(h.x), hy = Math.round(h.y) + yOff;
@@ -2518,7 +2569,278 @@ function render() {
   sctx.drawImage(scanlines, 0, 0);
   sctx.drawImage(vignette, 0, 0);
   /* END CRT PASS */
+
+  drawOrderLayer(sctx, sx, sy);
+
+  /* The board is what the player is actually reading, so it wins: after the
+     command layer is down, the pellets and the actors are punched back over
+     the top of it. An order must never hide the food it is drawn across. */
+  if (game.phase === 'command' || game.phase === 'play') {
+    const ds = dotScratch.getContext('2d');
+    ds.clearRect(0, 0, NATIVE_W, NATIVE_H);
+    drawDots(ds, game.phase === 'command' ? PAL.dotDim : PAL.dot);
+    if (game.fruit) {
+      ds.drawImage(SPRITES.fruit[game.fruit.idx % SPRITES.fruit.length],
+        DEN_EXIT_X - 8, tcy(FRUIT_TILE.r) - 8 + HUD_TOP * TILE);
+    }
+    if (game.phase !== 'flash') {
+      game.evader.draw(ds, game);
+      game.hunters.forEach(h => h.draw(ds, game));
+    }
+    sctx.drawImage(dotScratch, sx, sy, NATIVE_W * scale, NATIVE_H * scale);
+  }
 }
+
+/* BEGIN COMMAND LAYER ----------------------------------------------------
+   Everything above this point is a 1981 machine and obeys its rules. This
+   does not. The orders you draw are the one thing on screen that isn't a
+   cabinet artifact -- they are you reaching into the glass -- so they render
+   after the CRT pass, at full display resolution, with curves, glow and
+   colors the hardware could never have produced. The contrast is the point,
+   which is why the palette lock deliberately does not apply here.
+------------------------------------------------------------------------- */
+
+function orderPathPoints(tiles, closed, S, ox, oy) {
+  // tile centres in display space, split into runs at tunnel seams
+  const runs = [];
+  let cur = [];
+  const list = closed && tiles.length ? tiles.concat([tiles[0]]) : tiles;
+  for (let i = 0; i < list.length; i++) {
+    const t = list[i];
+    if (i > 0 && Math.abs(t.c - list[i - 1].c) > 1) { runs.push(cur); cur = []; }
+    cur.push({ x: (tcx(t.c)) * S + ox, y: (tcy(t.r) + HUD_TOP * TILE) * S + oy });
+  }
+  if (cur.length) runs.push(cur);
+  return runs;
+}
+
+function strokeRuns(ctx, runs, width, color, alpha, dashOffset) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = width;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  if (dashOffset !== null && dashOffset !== undefined) {
+    ctx.setLineDash([width * 1.6, width * 1.5]);
+    ctx.lineDashOffset = dashOffset;
+  }
+  for (const run of runs) {
+    if (run.length < 2) continue;
+    ctx.beginPath();
+    ctx.moveTo(run[0].x, run[0].y);
+    for (let i = 1; i < run.length; i++) ctx.lineTo(run[i].x, run[i].y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawOrderLayer(ctx, ox, oy) {
+  const showing = game.phase === 'command' || game.phase === 'play';
+  if (!showing) return;
+  const S = scale;
+  const frozen = game.phase === 'command';
+  const flow = (uiFrame * 0.55) % 1000;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  if (frozen) {
+    // a faint survey grid over the corridors, drawn as hairlines
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    ctx.strokeStyle = '#5878ff';
+    ctx.lineWidth = Math.max(1, S * 0.16);
+    ctx.beginPath();
+    for (let r = 0; r < MAZE_ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (!isOpen(c, r) || inDen(c, r)) continue;
+        const x = tcx(c) * S + ox, y = (tcy(r) + HUD_TOP * TILE) * S + oy;
+        const k = S * 0.9;
+        ctx.moveTo(x - k, y); ctx.lineTo(x + k, y);
+        ctx.moveTo(x, y - k); ctx.lineTo(x, y + k);
+      }
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  const hot = computeHotBeads(game);
+  const spacing = Math.max(2, game.params.hunterSpeed * BEAD_TICKS);
+
+  game.hunters.forEach((h, i) => {
+    const drawing = Draw.active && Draw.active.hunter === h;
+    let tiles = null, closed = false;
+    if (drawing) { tiles = Draw.active.tiles; }
+    else if (h.path) {
+      closed = h.path.closed;
+      tiles = closed ? h.path.tiles : h.path.tiles.slice(Math.max(0, h.path.idx - 1));
+    }
+    if (!tiles || tiles.length < 1) return;
+
+    const runs = orderPathPoints(tiles, closed, S, ox, oy);
+    const w = Math.max(2, S * 0.85);
+    const bright = frozen ? 1 : 0.5;
+
+    // the coast past the end of an open order
+    if (!closed) {
+      const ro = runOutFrom(tiles);
+      if (ro.length) {
+        const tail = orderPathPoints([tiles[tiles.length - 1]].concat(ro), false, S, ox, oy);
+        strokeRuns(ctx, tail, w * 0.8, h.color, 0.3 * (frozen ? 1 : 0.6), flow * 2);
+      }
+    }
+
+    // two glow passes under a solid core, then a bright pulse running along it
+    strokeRuns(ctx, runs, w * 4.5, h.color, 0.13 * bright, null);
+    strokeRuns(ctx, runs, w * 2.2, h.color, 0.26 * bright, null);
+    strokeRuns(ctx, runs, w, h.color, 0.9 * bright, null);
+    strokeRuns(ctx, runs, w * 0.5, '#ffffff', 0.5 * bright, -flow * 2.6);
+
+    // leading edge: a bright head that runs along the route
+    if (frozen && runs.length) {
+      const walk = closed ? tiles.concat([tiles[0]]) : tiles;
+      const total = (walk.length - 1) * TILE;
+      const headPos = (uiFrame * 1.6) % Math.max(total, 1);
+      const p = pointAlong(walk, headPos);
+      if (p) {
+        const hx = p.x * S + ox, hy = (p.y + HUD_TOP * TILE) * S + oy;
+        const g2 = ctx.createRadialGradient(hx, hy, 0, hx, hy, S * 2.6);
+        g2.addColorStop(0, h.color);
+        g2.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.save();
+        ctx.globalAlpha = 0.75;
+        ctx.fillStyle = g2;
+        ctx.beginPath(); ctx.arc(hx, hy, S * 2.6, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    // timing beads
+    const walk = closed ? tiles.concat([tiles[0]]) : tiles;
+    const hotSet = hot[i] && hot[i].hot;
+    for (let k = 1; k <= 80; k++) {
+      const p = pointAlong(walk, k * spacing);
+      if (!p) break;
+      const bx = p.x * S + ox, by = (p.y + HUD_TOP * TILE) * S + oy;
+      const isHot = hotSet && hotSet.has(k);
+      ctx.save();
+      if (isHot) {
+        const pulse = 0.6 + 0.4 * Math.sin(uiFrame * 0.18 + k);
+        ctx.globalAlpha = 0.9 * bright;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = Math.max(1, S * 0.28);
+        ctx.beginPath();
+        ctx.arc(bx, by, S * (0.95 + 0.35 * pulse), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = bright;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath(); ctx.arc(bx, by, S * 0.42, 0, Math.PI * 2); ctx.fill();
+      } else {
+        ctx.globalAlpha = 0.5 * bright;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath(); ctx.arc(bx, by, S * 0.55, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // arrowhead on an open route, or a closed-circuit ring
+    const last = runs[runs.length - 1];
+    if (!closed && last && last.length >= 2) {
+      const a = last[last.length - 2], b = last[last.length - 1];
+      const ang = Math.atan2(b.y - a.y, b.x - a.x);
+      const len = S * 2.6;
+      ctx.save();
+      ctx.globalAlpha = bright;
+      ctx.fillStyle = h.color;
+      ctx.translate(b.x, b.y); ctx.rotate(ang);
+      ctx.beginPath();
+      ctx.moveTo(len, 0);
+      ctx.lineTo(-len * 0.55, len * 0.7);
+      ctx.lineTo(-len * 0.2, 0);
+      ctx.lineTo(-len * 0.55, -len * 0.7);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+    } else if (closed && runs[0] && runs[0].length) {
+      const p0 = runs[0][0];
+      ctx.save();
+      ctx.globalAlpha = 0.8 * bright;
+      ctx.strokeStyle = h.color;
+      ctx.lineWidth = Math.max(1, S * 0.3);
+      ctx.beginPath();
+      ctx.arc(p0.x, p0.y, S * 1.9 + Math.sin(uiFrame * 0.1) * S * 0.25, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // an armed loop closure gets a halo on the start tile
+    if (drawing && Draw.active.closable && runs[0] && runs[0].length) {
+      const p0 = runs[0][0];
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = Math.max(1, S * 0.35);
+      ctx.beginPath();
+      ctx.arc(p0.x, p0.y, S * (2.4 + 0.5 * Math.sin(uiFrame * 0.25)), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  });
+
+  ctx.restore();
+
+  if (frozen) drawRoster(ctx, ox, oy);
+}
+
+/* The roster. Four ghosts can end up standing on the same tile, and then a
+   click can only ever reach one of them -- so each has a permanent number,
+   and pressing it selects that ghost no matter what is piled on top. */
+function drawRoster(ctx, ox, oy) {
+  const S = scale;
+  const h0 = S * 13;
+  const y = (HUD_TOP * TILE + MAZE_ROWS * TILE + HUD_BOT * TILE) * S + oy - h0 - S * 2;
+  const slotW = S * 50;
+  const x0 = (NATIVE_W * S - slotW * 4) / 2 + ox;
+  ctx.save();
+  ctx.textBaseline = 'middle';
+  game.hunters.forEach((h, i) => {
+    const x = x0 + i * slotW;
+    const selected = Draw.selected === i;
+    const commandable = h.isCommandable();
+    const busy = !!h.path;
+
+    // slot plate
+    ctx.globalAlpha = commandable ? (selected ? 0.30 : 0.14) : 0.07;
+    ctx.fillStyle = h.color;
+    ctx.fillRect(x, y, slotW - S * 3, h0);
+
+    ctx.globalAlpha = commandable ? 1 : 0.35;
+    ctx.font = 'bold ' + Math.round(S * 8) + 'px ui-monospace, Menlo, Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = selected ? '#ffffff' : h.color;
+    ctx.fillText(String(i + 1), x + S * 6, y + h0 / 2);
+
+    ctx.font = 'bold ' + Math.round(S * 5) + 'px ui-monospace, Menlo, Consolas, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = h.color;
+    ctx.fillText(h.def.name, x + S * 12, y + h0 * 0.36);
+
+    ctx.font = Math.round(S * 4) + 'px ui-monospace, Menlo, Consolas, monospace';
+    ctx.globalAlpha = commandable ? 0.75 : 0.3;
+    ctx.fillStyle = busy ? '#ffffff' : '#8fa0c0';
+    ctx.fillText(busy ? (h.path.closed ? 'PATROL' : 'ORDERED') : 'NO ORDER',
+      x + S * 12, y + h0 * 0.74);
+
+    if (selected) {
+      ctx.globalAlpha = 0.95;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = Math.max(1, S * 0.4);
+      ctx.strokeRect(x + S * 0.5, y + S * 0.5, slotW - S * 4, h0 - S);
+    }
+  });
+  ctx.restore();
+}
+/* END COMMAND LAYER */
 
 /* -------------------------------- boot ---------------------------------- */
 
@@ -2535,6 +2857,8 @@ function boot() {
 
   screenCanvas = document.getElementById('screen');
   native = makeCanvas(NATIVE_W, NATIVE_H);
+  dotScratch = makeCanvas(NATIVE_W, NATIVE_H);
+  dotScratch.getContext('2d').imageSmoothingEnabled = false;
   nativeCtx = native.getContext('2d');
   // Nothing on this canvas may ever be resampled: a smoothed blit invents
   // colors that are not in the palette.

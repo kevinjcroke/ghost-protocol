@@ -87,6 +87,33 @@ console.log('\n== self-crossing paths are legal ==');
   Draw.active = null;
 }
 
+console.log('\n== stacked ghosts stay reachable ==');
+{
+  toPlay();
+  const H = game.hunters;
+  H.forEach(h => { h.state = 'active'; h.path = null; h.dir = 'left';
+                   h.x = tcx(6); h.y = tcy(8); });
+  game.phase = 'command';
+  const picks = [];
+  for (let i = 0; i < 5; i++) {
+    const p = Draw.pickAt(tcx(6), tcy(8));
+    picks.push(p ? p.key : null);
+  }
+  ok('clicking a pile of ghosts cycles through every one of them',
+     new Set(picks.slice(0, 4)).size === 4, { picks });
+  ok('and the cycle wraps back round', picks[4] === picks[0], { picks });
+
+  Draw.selected = 2;                     // as a number key would
+  Draw.begin(H[Draw.selected]);
+  ok('a ghost selected by number is the one that gets drawn for',
+     Draw.active.hunter === H[2]);
+  Draw.extendToward(12, 8);
+  Draw.commit(true);
+  ok('and the order lands on that ghost, not the one on top',
+     H[2].path !== null && H[0].path === null,
+     { volt: !!H[2].path, raze: !!H[0].path });
+}
+
 console.log('\n== the tip never reroutes on the player\'s behalf ==');
 {
   toPlay();

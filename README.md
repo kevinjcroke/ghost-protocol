@@ -28,7 +28,15 @@ You cannot steer a ghost directly. You freeze time and **draw** where it walks.
 | Return the tip to the start tile, release | Closes it into a **patrol loop** the ghost walks forever |
 | Click a ghost, release without dragging | Clears its order |
 | Right-drag over a path | Erases from that point |
+| **1–4** / **Tab** | Select a ghost by name from the roster |
+| Click a pile of ghosts repeatedly | Cycles through the ones stacked there |
 | **M** | Mute |
+
+Ghosts pile onto the same tile constantly — three of them leave the den
+together — and a click can only land on one. So each keeps a permanent number.
+Press it and you have that ghost no matter what is standing on top of it; the
+roster along the bottom of the frozen screen shows who is who and which of
+them currently has somewhere to be.
 
 The drawn line is not a route the computer picked for you. It follows your
 cursor tile by tile through the corridors, orthogonally, refusing walls. Drag
@@ -116,6 +124,17 @@ hardware constraints the real cabinets had:
   and the round-start jingle are all composed for this game.
 - **Presentation**: 224x288 native, integer nearest-neighbor scaling only, with
   a light CRT pass — scanlines, phosphor bloom, vignette.
+
+There is exactly one deliberate exception, and it's the point of the game.
+**The orders you draw are not a 1981 artifact.** The trails, beads, arrowheads
+and roster render *after* the CRT pass, at full display resolution, with
+smooth curves, additive glow and colors no color PROM could produce. The board
+is a machine from 1981; the command layer is you reaching through the glass at
+it. The pellets and sprites are then punched back over the top, so an order
+never hides the food it's drawn across.
+
+`test/palette-lock.js` enforces the boundary: everything outside the CRT pass
+and the command layer must come from the fixed table.
 
 The role reversal is wired through the audio too: the death spiral now plays
 when *we* lose a hunter, and the siren's rising pitch is a threat clock

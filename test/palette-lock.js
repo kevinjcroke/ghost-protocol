@@ -6,9 +6,13 @@ const fs = require('fs');
 const path = require('path');
 
 const raw = fs.readFileSync(path.join(__dirname, '..', 'game.js'), 'utf8');
-// The CRT pass models the glass in front of the board, so it is allowed to
-// blend and blur. Strip it before judging the framebuffer drawing code.
-const src = raw.replace(/\/\* BEGIN CRT PASS[\s\S]*?\/\* END CRT PASS \*\//g, '');
+/* Two layers are deliberately not the 1981 board and are exempt:
+   the CRT pass, which models the glass in front of it, and the command
+   layer, which is the player reaching through that glass. Everything else
+   is the framebuffer and must obey the palette. */
+const src = raw
+  .replace(/\/\* BEGIN CRT PASS[\s\S]*?\/\* END CRT PASS \*\//g, '')
+  .replace(/\/\* BEGIN COMMAND LAYER[\s\S]*?\/\* END COMMAND LAYER \*\//g, '');
 const LADDER = [0x00, 0x21, 0x47, 0x51, 0x97, 0xC8, 0xF0, 0xFF];
 
 const palBlock = raw.match(/const PAL = \{([\s\S]*?)\n\};/)[1];
