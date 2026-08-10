@@ -1742,7 +1742,15 @@ class Evader {
       c = exits[0].c; r = exits[0].r;
       const key = r * COLS + wrapCol(c);
       if (game.parkedTiles && game.parkedTiles.has(key)) {
-        return -500 + steps;    // this corridor dead-ends in a statue
+        /* A statue seals this corridor -- it is a cul-de-sac, not poison.
+           With a healthy margin he strolls in, eats, and strolls out: that
+           is what exploiting a parked ghost means. Anything less than a
+           comfortable margin and the sealed corridor repels hard, because a
+           cul-de-sac is exactly where a second body turns him into a score.
+           (Flat-refusing every sealed corridor was worse: it shrank his map
+           so badly that one chaser could herd him around the perimeter.) */
+        const sealed = Math.min(minMargin, 60) * 3 + snacks * 1.2 - 6;
+        return minMargin < 30 ? sealed - 70 : sealed;
       }
       if (seen.has(key)) break;
       seen.add(key);
