@@ -33,10 +33,17 @@ You cannot steer a ghost directly. You freeze time and **draw** where it walks.
 | **M** | Mute |
 
 Ghosts pile onto the same tile constantly — three of them leave the den
-together — and a click can only land on one. So each keeps a permanent number.
-Press it and you have that ghost no matter what is standing on top of it; the
-roster along the bottom of the frozen screen shows who is who and which of
-them currently has somewhere to be.
+together — and a click can only land on one. So each keeps a permanent number
+and a button. The roster along the bottom of the frozen screen shows who is
+who and which of them currently has somewhere to be: click a name to select
+that ghost (it floats to the front of whatever pile it's standing in), press
+its number, or click the green **▶** to unfreeze — the whole game is playable
+without touching the keyboard.
+
+The prize that appears under the den is worth fighting for on both sides. He
+wants it for the points you're denied; a hunter routed over it first banks the
+points **and runs on overdrive for eight seconds** — the one window where a
+ghost can flat outrun him.
 
 The drawn line is not a route the computer picked for you. It follows your
 cursor tile by tile through the corridors, orthogonally, refusing walls. Drag

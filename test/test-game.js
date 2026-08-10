@@ -239,6 +239,10 @@ console.log('\n== the contested prize ==');
   tick(2);
   ok('a hunter routed over the prize claims it', game.fruit === null && game.score > before,
      { gained: game.score - before });
+  ok('and that hunter gets a burst of overdrive', h.boostT > 0, { boostT: h.boostT });
+  const slow = game.params.hunterSpeed;
+  h.dir = 'right'; h.update(game);
+  ok('which actually makes it faster', h.speed > slow, { speed: h.speed, base: slow });
 
   game.fruit = { idx: 0, timer: 600 };
   game.hunters.forEach(x => { x.x = tcx(26); x.y = tcy(29); });

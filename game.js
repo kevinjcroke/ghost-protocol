@@ -906,6 +906,7 @@ class Hunter {
     }
     this.path = null;           // {tiles:[{c,r}], closed, idx}
     this.speed = 0;
+    this.boostT = 0;            // prize overdrive ticks
     this.frame = 0; this.animT = 0;
     this.respawnT = 0;
     this.releaseT = 60 + this.slot * 120;   // den release timing
@@ -1056,12 +1057,14 @@ class Hunter {
     if (this.state !== 'active') return;
 
     // active
+    if (this.boostT > 0) this.boostT--;
     const fright = game.frightT > 0;
     const t = this.tile();
     const inTunnel = TUNNEL_ROWS.includes(t.r) && (t.c <= 6 || t.c >= 21);
     this.speed = fright ? game.params.hunterFrightSpeed
                : inTunnel ? game.params.hunterTunnelSpeed
                : game.params.hunterSpeed;
+    if (this.boostT > 0 && !fright) this.speed *= 1.22;   // prize overdrive
     stepEntity(this, (e, ws) => this.decide(e, ws));
   }
 
@@ -1588,7 +1591,7 @@ class Evader {
         if (d === 2) game.triggerFright();
       }
       if (game.fruit && tt.r === FRUIT_TILE.r && (tt.c === 13 || tt.c === 14)) {
-        game.takeFruit(false);
+        game.takeFruit(null);
       }
     }
   }
@@ -1691,10 +1694,13 @@ class Evader {
         const margin2 = minMargin + exits.length * 2;
         let score = Math.min(minMargin, 60) * 3 + exits.length * 5
           + snacks * 1.2 + fruitBonus * (minMargin > 20 ? 14 : 0);
-        // when it is safe, head toward whatever food is left
-        if (minMargin > 18 && game.foodDist && c >= 0 && c < COLS) {
+        /* When it is genuinely safe, head toward whatever food is left. The
+           gate matters: chasing dots with a hunter three tiles away is how
+           he used to walk himself into corners, and a lone chaser could farm
+           that mistake all the way to a capture. */
+        if (minMargin > 30 && game.foodDist && c >= 0 && c < COLS) {
           const fd = game.foodDist[r * COLS + wrapCol(c)];
-          if (fd >= 0) score += Math.max(0, 24 - fd) * 1.1;
+          if (fd >= 0) score += Math.max(0, 24 - fd) * 0.8;
         }
         // cornered? an energizer run is worth everything
         if (energ) score += (minMargin < 25 ? 80 : game.frightT > 0 ? -40 : 6);
@@ -1757,9 +1763,9 @@ class Evader {
 function levelParams(n) {
   const base = 1.26;   // px per tick at full arcade speed
   return {
-    evaderSpeed: Math.min(0.84 + 0.018 * (n - 1), 1.02) * base,
+    evaderSpeed: Math.min(0.84 + 0.02 * (n - 1), 1.06) * base,
     evaderFrightSpeed: Math.min(0.95 + 0.01 * (n - 1), 1.05) * base,
-    hunterSpeed: Math.min(0.82 + 0.015 * (n - 1), 0.99) * base,
+    hunterSpeed: Math.min(0.82 + 0.015 * (n - 1), 0.96) * base,
     hunterTunnelSpeed: 0.55 * base,
     hunterFrightSpeed: 0.68 * base,
     eyeSpeed: 1.9 * base,
@@ -1865,11 +1871,10 @@ const game = {
     // frightened hunters do NOT reverse or flee by themselves: your problem
   },
 
-  /* The prize under the den is contested: route a hunter over it and it is
-     ours. He is always closer, so it stays a real decision -- is it worth
-     bending a hunter's path away from the hunt to deny him the points?
-     It used to hand him a speed burst as well, which made it a pure tax:
-     you could not win the race and lost the board when you didn't. */
+  /* The prize under the den is contested: route a hunter over it and that
+     hunter gets the points AND a burst of speed -- for a few seconds it can
+     actually run him down. He is always closer, so denying him is work, but
+     now the work buys a weapon rather than just subtracting his snack. */
   takeFruit(byHunter) {
     if (!this.fruit) return;
     const pts = FRUIT_POINTS[this.fruit.idx % FRUIT_POINTS.length];
@@ -1877,7 +1882,9 @@ const game = {
     Sound.fruit();
     if (byHunter) {
       this.addScore(pts);
+      byHunter.boostT = 480;   // 8 seconds of overdrive
       this.popup(DEN_EXIT_X, tcy(FRUIT_TILE.r), String(pts), PAL.cyan);
+      this.popup(byHunter.x, byHunter.y - 10, byHunter.def.name + ' FAST', byHunter.color);
     } else {
       this.popup(DEN_EXIT_X, tcy(FRUIT_TILE.r), 'HE TOOK IT', PAL.magenta);
     }
@@ -2063,7 +2070,7 @@ const game = {
         if (h.state !== 'active') continue;
         const ht = h.tile();
         if (ht.r === FRUIT_TILE.r && (ht.c === 13 || ht.c === 14)) {
-          this.takeFruit(true);
+          this.takeFruit(h);
           break;
         }
       }
@@ -2134,6 +2141,16 @@ function toNative(ev) {
   const y = (ev.clientY - rect.top) / scale;
   return { x, y: y - HUD_TOP * TILE };
 }
+function toDisplay(ev) {
+  const rect = screenCanvas.getBoundingClientRect();
+  return {
+    x: (ev.clientX - rect.left) * (screenCanvas.width / rect.width),
+    y: (ev.clientY - rect.top) * (screenCanvas.height / rect.height),
+  };
+}
+function inRect(p, r) {
+  return r && p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+}
 
 function pauseToCommand() {
   if (game.phase === 'play') {
@@ -2203,6 +2220,21 @@ function bindInput() {
     input.dragOrigin = { x: p.x, y: p.y };
     input.dragMoved = false;
     if (game.phase !== 'play' && game.phase !== 'command') return;
+    // roster buttons live in display space, above the glass
+    if (game.phase === 'command') {
+      const dp = toDisplay(ev);
+      if (inRect(dp, rosterUI.play)) { resumeFromCommand(); return; }
+      const slot = rosterUI.slots.find(s => inRect(dp, s));
+      if (slot) {
+        const h = game.hunters[slot.i];
+        if (h && h.isCommandable()) {
+          Draw.selected = slot.i;
+          Draw.lastPicked = slot.i;   // floats it to the front of any pile
+          Sound.uiCommit();
+        }
+        return;
+      }
+    }
     const picked = Draw.pickAt(p.x, p.y);
     // grabbing a ghost mid-play stops the clock by itself: that is the
     // whole control scheme, and it has to be discoverable by grabbing one
@@ -2305,7 +2337,9 @@ function drawHUD(g) {
   /* The status row sits on whole tiles like everything else on the board.
      Packing icons at their content width put them at x=26 and x=36, which no
      tile pointer can address -- and it read as a modern layout function
-     sitting two rows under a perfect character grid. */
+     sitting two rows under a perfect character grid.
+     In command mode the roster owns this strip, so the row yields to it. */
+  if (game.phase === 'command') return;
   const by = (HUD_TOP + MAZE_ROWS) * TILE;
   for (let i = 0; i < Math.max(0, game.contracts); i++) {
     g.drawImage(SPRITES.minis[HUNTER_DEFS[0].key], (2 + i) * TILE, by);
@@ -2354,6 +2388,18 @@ function drawCommandOverlay(g) {
   });
 }
 
+/* The selected ghost draws last, so picking one from the roster visibly
+   floats it to the top of whatever pile it is standing in. */
+function hunterDrawOrder() {
+  const order = game.hunters.slice();
+  const sel = game.hunters[Draw.selected];
+  if (sel) {
+    const at = order.indexOf(sel);
+    if (at >= 0) { order.splice(at, 1); order.push(sel); }
+  }
+  return order;
+}
+
 function drawPlayfield(g) {
   const yOff = HUD_TOP * TILE;
   const frozen = game.phase === 'command';
@@ -2393,12 +2439,12 @@ function drawPlayfield(g) {
       g.drawImage(SPRITES.gob[d][f],
         Math.round(game.evader.x - 8), Math.round(game.evader.y - 8) + yOff);
     }
-    game.hunters.forEach(h => h.draw(g, game));
+    hunterDrawOrder().forEach(h => h.draw(g, game));
   } else if (game.phase !== 'flash') {
     game.evader.draw(g, game);
-    game.hunters.forEach(h => h.draw(g, game));
+    hunterDrawOrder().forEach(h => h.draw(g, game));
   } else {
-    game.hunters.forEach(h => h.draw(g, game));
+    hunterDrawOrder().forEach(h => h.draw(g, game));
   }
   // popups, held inside the screen so an edge capture still reads
   game.popups.forEach(p => {
@@ -2585,7 +2631,7 @@ function render() {
     }
     if (game.phase !== 'flash') {
       game.evader.draw(ds, game);
-      game.hunters.forEach(h => h.draw(ds, game));
+      hunterDrawOrder().forEach(h => h.draw(ds, game));
     }
     sctx.drawImage(dotScratch, sx, sy, NATIVE_W * scale, NATIVE_H * scale);
   }
@@ -2793,51 +2839,107 @@ function drawOrderLayer(ctx, ox, oy) {
 }
 
 /* The roster. Four ghosts can end up standing on the same tile, and then a
-   click can only ever reach one of them -- so each has a permanent number,
-   and pressing it selects that ghost no matter what is piled on top. */
+   click can only ever reach one of them -- so each has a permanent number
+   and a button down here. Clicking a name selects that ghost and floats it
+   to the front of the pile; the PLAY button unfreezes without the keyboard.
+   Slot rectangles are stored each frame for the mousedown hit test. */
+const rosterUI = { slots: [], play: null };
+
+function plate(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
 function drawRoster(ctx, ox, oy) {
   const S = scale;
   const h0 = S * 13;
-  const y = (HUD_TOP * TILE + MAZE_ROWS * TILE + HUD_BOT * TILE) * S + oy - h0 - S * 2;
-  const slotW = S * 50;
-  const x0 = (NATIVE_W * S - slotW * 4) / 2 + ox;
+  const gap = S * 2;
+  const slotW = S * 42;
+  const playW = S * 20;
+  const total = slotW * 4 + gap * 4 + playW;
+  const x0 = (NATIVE_W * S - total) / 2 + ox;
+  const y = (HUD_TOP * TILE + MAZE_ROWS * TILE + HUD_BOT * TILE) * S + oy - h0 - S * 1.5;
+  rosterUI.slots = [];
   ctx.save();
   ctx.textBaseline = 'middle';
+
   game.hunters.forEach((h, i) => {
-    const x = x0 + i * slotW;
+    const x = x0 + i * (slotW + gap);
     const selected = Draw.selected === i;
     const commandable = h.isCommandable();
     const busy = !!h.path;
+    rosterUI.slots.push({ x, y, w: slotW, h: h0, i });
 
-    // slot plate
-    ctx.globalAlpha = commandable ? (selected ? 0.30 : 0.14) : 0.07;
-    ctx.fillStyle = h.color;
-    ctx.fillRect(x, y, slotW - S * 3, h0);
+    // glass plate with a glowing edge in the ghost's colour
+    ctx.save();
+    ctx.globalAlpha = commandable ? 1 : 0.35;
+    plate(ctx, x, y, slotW, h0, S * 2.5);
+    ctx.fillStyle = 'rgba(8,12,28,0.88)';
+    ctx.fill();
+    if (selected) {
+      ctx.shadowColor = h.color;
+      ctx.shadowBlur = S * 4;
+    }
+    ctx.strokeStyle = h.color;
+    ctx.globalAlpha = (commandable ? 1 : 0.35) * (selected ? 1 : 0.45);
+    ctx.lineWidth = Math.max(1, S * (selected ? 0.7 : 0.4));
+    plate(ctx, x, y, slotW, h0, S * 2.5);
+    ctx.stroke();
+    ctx.restore();
 
     ctx.globalAlpha = commandable ? 1 : 0.35;
-    ctx.font = 'bold ' + Math.round(S * 8) + 'px ui-monospace, Menlo, Consolas, monospace';
+    // number badge
+    ctx.font = 'bold ' + Math.round(S * 7) + 'px ui-monospace, Menlo, Consolas, monospace';
     ctx.textAlign = 'center';
     ctx.fillStyle = selected ? '#ffffff' : h.color;
-    ctx.fillText(String(i + 1), x + S * 6, y + h0 / 2);
+    ctx.fillText(String(i + 1), x + S * 6, y + h0 / 2 + S * 0.3);
 
-    ctx.font = 'bold ' + Math.round(S * 5) + 'px ui-monospace, Menlo, Consolas, monospace';
+    ctx.font = 'bold ' + Math.round(S * 4.6) + 'px ui-monospace, Menlo, Consolas, monospace';
     ctx.textAlign = 'left';
     ctx.fillStyle = h.color;
-    ctx.fillText(h.def.name, x + S * 12, y + h0 * 0.36);
+    ctx.fillText(h.def.name, x + S * 12, y + h0 * 0.34);
 
-    ctx.font = Math.round(S * 4) + 'px ui-monospace, Menlo, Consolas, monospace';
-    ctx.globalAlpha = commandable ? 0.75 : 0.3;
-    ctx.fillStyle = busy ? '#ffffff' : '#8fa0c0';
-    ctx.fillText(busy ? (h.path.closed ? 'PATROL' : 'ORDERED') : 'NO ORDER',
-      x + S * 12, y + h0 * 0.74);
-
-    if (selected) {
-      ctx.globalAlpha = 0.95;
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = Math.max(1, S * 0.4);
-      ctx.strokeRect(x + S * 0.5, y + S * 0.5, slotW - S * 4, h0 - S);
-    }
+    ctx.font = Math.round(S * 3.6) + 'px ui-monospace, Menlo, Consolas, monospace';
+    ctx.globalAlpha = commandable ? 0.8 : 0.3;
+    ctx.fillStyle = busy ? '#ffffff' : '#7c8cb0';
+    const status = !commandable ? 'DOWN'
+      : h.boostT > 0 ? 'OVERDRIVE'
+      : busy ? (h.path.closed ? 'PATROL' : 'ORDERED') : 'NO ORDER';
+    ctx.fillText(status, x + S * 12, y + h0 * 0.72);
   });
+
+  // PLAY: a green pulse of a button, mouse-only resume
+  const px = x0 + 4 * (slotW + gap);
+  rosterUI.play = { x: px, y, w: playW, h: h0 };
+  const pulse = 0.75 + 0.25 * Math.sin(uiFrame * 0.12);
+  ctx.save();
+  plate(ctx, px, y, playW, h0, S * 2.5);
+  ctx.fillStyle = 'rgba(8,20,12,0.88)';
+  ctx.fill();
+  ctx.shadowColor = '#40ff88';
+  ctx.shadowBlur = S * 4 * pulse;
+  ctx.strokeStyle = '#40ff88';
+  ctx.globalAlpha = pulse;
+  ctx.lineWidth = Math.max(1, S * 0.6);
+  plate(ctx, px, y, playW, h0, S * 2.5);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#40ff88';
+  const cx2 = px + playW / 2, cy2 = y + h0 / 2;
+  ctx.beginPath();
+  ctx.moveTo(cx2 - S * 2.2, cy2 - S * 3);
+  ctx.lineTo(cx2 + S * 3.4, cy2);
+  ctx.lineTo(cx2 - S * 2.2, cy2 + S * 3);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
   ctx.restore();
 }
 /* END COMMAND LAYER */
