@@ -1002,15 +1002,22 @@ class Hunter {
       return;
     }
     if (this.state === 'exiting') {
-      // half-tile sideways slide off the seam onto the grid
-      const targetX = this.exitHeading === 'left' ? tcx(13) : tcx(14);
+      /* Slide off the door seam onto the grid. With an order queued, land
+         exactly on the trail's anchor tile so the order survives the trip
+         out -- landing a tile away silently voided it. With no order, drift
+         to the side chute and head up it, so a respawned ghost visibly
+         rejoins the field instead of wall-stopping one tile from the door
+         and looking like it never left the box at all. */
+      const hasOrder = !!this.path;
+      const targetC = hasOrder ? DOOR_C0 : (this.exitHeading === 'left' ? 12 : 15);
+      const targetX = tcx(targetC);
       const spd = 0.6;
-      this.dir = this.exitHeading;
+      this.dir = this.x < targetX ? 'right' : 'left';
       if (Math.abs(this.x - targetX) > spd) this.x += Math.sign(targetX - this.x) * spd;
       else {
         this.x = targetX;
         this.state = 'active';
-        this.dir = this.exitHeading;
+        this.dir = hasOrder ? null : 'up';   // null: the order decides
       }
       return;
     }
@@ -1611,6 +1618,10 @@ class Evader {
     const danger = this.dangerAt(t.c, t.r, 0, game, myTicksPerTile) < 10;
     let cands = opts.filter(o => o.dir !== OPP[this.dir]);
     if (!cands.length || danger) cands = opts;
+    // never step onto a statue: that tile is a wall that kills
+    const notParked = cands.filter(o =>
+      !(game.parkedTiles && game.parkedTiles.has(o.r * COLS + wrapCol(o.c))));
+    if (notParked.length) cands = notParked;
 
     let best = null, bestScore = -Infinity, second = null, secondScore = -Infinity;
     for (const o of cands) {
@@ -1688,7 +1699,8 @@ class Evader {
         if (game.fruit && r === FRUIT_TILE.r && (wrapCol(c) === 13 || wrapCol(c) === 14)) fruitBonus = 1;
       }
       if (TUNNEL_ROWS.includes(r) && (c <= 1 || c >= COLS - 2)) tunnelBonus = 1;
-      const exits = neighborsOf(wrapCol(c), r).filter(n => n.dir !== OPP[prevDir]);
+      const exits = neighborsOf(wrapCol(c), r).filter(n => n.dir !== OPP[prevDir]
+        && !(game.parkedTiles && game.parkedTiles.has(n.r * COLS + wrapCol(n.c))));
       if (exits.length !== 1) {   // junction or dead-end: stop the walk
         // junction quality: more ways out = better
         const margin2 = minMargin + exits.length * 2;
@@ -1729,6 +1741,9 @@ class Evader {
       prevDir = exits[0].dir;
       c = exits[0].c; r = exits[0].r;
       const key = r * COLS + wrapCol(c);
+      if (game.parkedTiles && game.parkedTiles.has(key)) {
+        return -500 + steps;    // this corridor dead-ends in a statue
+      }
       if (seen.has(key)) break;
       seen.add(key);
       ticks += myTpt;
@@ -1799,6 +1814,7 @@ const game = {
   evader: null,
   params: levelParams(1),
   hunterFutures: [[], [], [], []],
+  parkedTiles: new Set(),
   foodDist: null,
   hunterDistGrids: [null, null, null, null],
   releaseFlip: false,
@@ -1929,6 +1945,7 @@ const game = {
   },
 
   refreshThreatModel() {
+    this.parkedTiles = new Set();
     for (let i = 0; i < this.hunters.length; i++) {
       const h = this.hunters[i];
       const t = h.tile();
@@ -1937,6 +1954,11 @@ const game = {
         r: Math.max(0, Math.min(MAZE_ROWS - 1, t.r)),
       });
       this.hunterFutures[i] = h.isThreat() ? hunterFuture(h, this) : [];
+      // a parked hunter is a wall that kills: the evader's routing has to
+      // treat its tile as impassable, not as a distant threat
+      if (h.isThreat() && !h.path && !h.dir && t.c >= 0 && t.c < COLS) {
+        this.parkedTiles.add(t.r * COLS + wrapCol(t.c));
+      }
     }
   },
 
