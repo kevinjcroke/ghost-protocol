@@ -4,7 +4,7 @@ const { game, Draw, tcx, tcy, COLS, bfsRoute, neighborsOf, wrapCol, OPP } = API;
 const dots = () => API.dots;
 const dotTotal = () => API.dotTotal;
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, loopLength = 0;
 function ok(name, cond, extra) {
   if (cond) { pass++; console.log('  PASS ' + name); }
   else { fail++; console.log('  FAIL ' + name + (extra ? '  -> ' + JSON.stringify(extra) : '')); }
@@ -35,10 +35,12 @@ game.phase = 'command';
   Draw.extendToward(6, 1); Draw.extendToward(6, 4);
   Draw.extendToward(1, 4); Draw.extendToward(1, 1);
   ok('returning to the start tile arms loop closure', Draw.active.closable === true);
+  const drawn = Draw.active.tiles.length;
   Draw.commit(true);
   ok('committed path is a closed patrol', h.path && h.path.closed === true);
-  ok('closed path drops the duplicated start tile', h.path.tiles.length === 16,
-     { len: h.path && h.path.tiles.length });
+  ok('closed path drops the duplicated start tile', h.path.tiles.length === drawn - 1,
+     { drawn, len: h.path && h.path.tiles.length });
+  loopLength = h.path.tiles.length;
 }
 
 console.log('\n== the wall-stop rule ==');
@@ -48,8 +50,10 @@ console.log('\n== the wall-stop rule ==');
   h.x = tcx(6); h.y = tcy(9); h.dir = 'up';
   game.phase = 'play';
   for (let i = 0; i < 400; i++) h.update(game);
+  const t = h.tile();
   ok('an unordered hunter runs until a wall, then stops dead',
-     h.dir === null && h.tile().r === 7, { tile: h.tile(), dir: h.dir });
+     h.dir === null && !API.isOpen(t.c, t.r - 1) && t.r < 9,
+     { tile: t, dir: h.dir, aboveOpen: API.isOpen(t.c, t.r - 1) });
   const before = { x: h.x, y: h.y };
   for (let i = 0; i < 200; i++) h.update(game);
   ok('and it stays stopped with no order', h.x === before.x && h.y === before.y);
@@ -64,7 +68,8 @@ console.log('\n== patrol loops run forever ==');
     const t = h.tile(); seen.add(t.c + ',' + t.r);
   }
   ok('a looped hunter keeps walking its circuit', h.path !== null && h.dir !== null);
-  ok('the circuit covers its whole perimeter', seen.size === 16, { n: seen.size });
+  ok('the circuit covers its whole perimeter', seen.size === loopLength,
+     { walked: seen.size, loop: loopLength });
 }
 
 console.log('\n== self-crossing paths are legal ==');

@@ -30,30 +30,34 @@ const DIR_NAMES = ['up', 'down', 'left', 'right'];
 const OPP = { up: 'down', down: 'up', left: 'right', right: 'left' };
 
 /* Fixed palette. Everything drawn must come from this table. */
+/* Every channel is snapped to the eight rungs a period resistor ladder could
+   drive -- 00 21 47 51 97 C8 F0 FF -- so no value here is off a modern color
+   picker. Nothing on screen may use a color outside this table; test/
+   palette-lock.js enforces that. */
 const PAL = {
   black:   '#000000',
-  wall:    '#2130f0',
-  door:    '#ff9ecb',
-  dot:     '#f7c99c',
-  white:   '#f8f8f8',
-  yellow:  '#ffe93c',
-  red:     '#ff2419',
-  magenta: '#ff5ef2',
-  cyan:    '#23ffe9',
-  orange:  '#ffa41e',
-  fright:  '#2020c8',
-  frightW: '#f7f7ff',
-  eyeWhite:'#f8f8f8',
-  pupil:   '#2130f0',
-  peach:   '#f7c99c',
-  green:   '#31ff5e',
-  grid:    '#101c50',
+  wall:    '#2121F0',
+  door:    '#FF97C8',
+  dot:     '#F0C897',
+  white:   '#FFFFFF',
+  yellow:  '#FFF021',
+  red:     '#FF2100',
+  magenta: '#FF51FF',
+  cyan:    '#21FFFF',
+  orange:  '#FF9700',
+  fright:  '#2121C8',
+  eyeWhite:'#FFFFFF',
+  pupil:   '#2121F0',
+  peach:   '#F0C897',
+  green:   '#21FF51',
+  grid:    '#002151',
   /* second hardware palette bank, used when time is frozen. A real board
      swapped palette entries; it could not alpha-blend a framebuffer. */
-  wallDim: '#101878',
-  dotDim:  '#7c6450',
-  doorDim: '#7c4e64',
+  wallDim: '#002197',
+  dotDim:  '#975151',
+  doorDim: '#974751',
 };
+PAL.frightW = PAL.white;   // the flash is plain white, not a second near-white
 
 const HUNTER_DEFS = [
   { key: 'raze',  color: PAL.red,     name: 'RAZE',  nick: 'HAMMER'  },
@@ -68,41 +72,46 @@ const HUNTER_DEFS = [
    Row 11 and row 20 are wrap tunnels.
 ------------------------------------------------------------------------- */
 
+/* The den sits astride the one wrapping row, which matters more than it
+   looks: a tunnel row open across the full width would let an unordered
+   hunter circle the board forever without ever meeting a wall, and the rule
+   that an unordered hunter eventually stops dead is the whole game. Every
+   straight run in here terminates in a wall. */
 const MAZE_SRC = [
   '############################',
   '#............##............#',
   '#.####.#####.##.#####.####.#',
+  '#o####.#####.##.#####.####o#',
   '#.####.#####.##.#####.####.#',
-  '#o........................o#',
-  '#.##.####.########.####.##.#',
-  '#.##.####.########.####.##.#',
   '#..........................#',
-  '######.##.########.##.######',
-  '######.##.########.##.######',
-  '######.##.########.##.######',
-  '                            ',
-  '######### ###--### #########',
-  '######### #      # #########',
-  '######### #      # #########',
-  '######### #      # #########',
-  '######### ######## #########',
-  '#........          ........#',
+  '#.####.##############.####.#',
+  '#.####.##############.####.#',
+  '#.####................####.#',
   '#.####.#####.##.#####.####.#',
   '#.####.#####.##.#####.####.#',
-  '      ................      ',
-  '#.#####.####.##.####.#####.#',
-  '#.#####.####.##.####.#####.#',
-  '#............  ............#',
-  '####.#####.######.#####.####',
-  '####.#####.######.#####.####',
-  '#o...........##...........o#',
-  '#.#####.####.##.####.#####.#',
-  '#.#####.####.##.####.#####.#',
+  '#......#####....#####......#',
+  '#.####.######--######.####.#',
+  '#.####.####      ####.####.#',
+  ' ......####      ####...... ',
+  '#.####.####      ####.####.#',
+  '#.####.##############.####.#',
   '#..........................#',
+  '#.####.#####.##.#####.####.#',
+  '#.####.#####.##.#####.####.#',
+  '#............##............#',
+  '#.####.##############.####.#',
+  '#.####.##############.####.#',
+  '#..........................#',
+  '#.####.#####.##.#####.####.#',
+  '#.####.#####.##.#####.####.#',
+  '#.####................####.#',
+  '#o####.#####.##.#####.####o#',
+  '#.####.#####.##.#####.####.#',
+  '#............##............#',
   '############################',
 ];
 
-const TUNNEL_ROWS = [11, 20];
+const TUNNEL_ROWS = [14];
 const DEN = { top: 12, bottom: 16, left: 10, right: 17,  // wall bounds
               inTop: 13, inBottom: 15, inLeft: 11, inRight: 16 };
 const DOOR_ROW = 12, DOOR_C0 = 13, DOOR_C1 = 14;
@@ -285,21 +294,38 @@ function renderMazeLayer(color, doorColor) {
     if (x < 0 || x >= NATIVE_W) return TUNNEL_ROWS.includes(r);
     return !solidAt(Math.floor(x / TILE), r);
   };
-  g.fillStyle = color;
+  // Lay both strokes down as a mask first.
+  const on = new Uint8Array(NATIVE_W * H);
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < NATIVE_W; x++) {
       const d = wallDist[y * NATIVE_W + x];
-      if (d === 0 || d > 3.5) continue;
-      const outer = d < 1.5;
-      const inner = d >= 2.5 && d < 3.5;
-      if (!outer && !inner) continue;
-      if (outer) {
-        // clip the tip of a convex corner so the line reads as rounded
-        const oU = openPx(x, y - 1), oD = openPx(x, y + 1);
-        const oL = openPx(x - 1, y), oR = openPx(x + 1, y);
-        if ((oU || oD) && (oL || oR)) continue;
+      if (d === 0) continue;
+      if (d < 1.5 || (d >= 2.5 && d < 3.5)) on[y * NATIVE_W + x] = 1;
+    }
+  }
+  /* Then round every convex corner of the mask the same way, so the inner and
+     outer strokes stay concentric. Chamfering only the outer one is the tell
+     that these are stroked rectangles rather than a corner tile. */
+  const at = (x, y) => (x < 0 || x >= NATIVE_W || y < 0 || y >= H)
+    ? 0 : on[y * NATIVE_W + x];
+  const tips = [];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < NATIVE_W; x++) {
+      if (!at(x, y)) continue;
+      const u = at(x, y - 1), d2 = at(x, y + 1), l = at(x - 1, y), r = at(x + 1, y);
+      // exactly one horizontal and one vertical neighbour: an outside corner
+      if (u + d2 === 1 && l + r === 1) {
+        const dx = r ? 1 : -1, dy = d2 ? 1 : -1;
+        if (!at(x - dx, y - dy)) tips.push(y * NATIVE_W + x);
       }
-      g.fillRect(x, y, 1, 1);
+    }
+  }
+  tips.forEach(i => { on[i] = 0; });
+
+  g.fillStyle = color;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < NATIVE_W; x++) {
+      if (on[y * NATIVE_W + x]) g.fillRect(x, y, 1, 1);
     }
   }
   // den door: a bright barred gate across the two door tiles
@@ -316,8 +342,9 @@ function renderMazeLayer(color, doorColor) {
 /* Hunter: a "specter" — peaked crown, wide scanning visor, flame skirt.
    14x14, two skirt frames. */
 const HUNTER_BODY = [
-  [ // frame A — three feet down
-    '....######....',
+  [ // frame A — hem wave to the left
+    '.....####.....',
+    '...########...',
     '..##########..',
     '.############.',
     '##############',
@@ -327,13 +354,13 @@ const HUNTER_BODY = [
     '##############',
     '##############',
     '##############',
-    '##############',
-    '##############',
-    '###..####..###',
-    '##....##....##',
+    '#..###..###..#',
+    '#...##...##...',
+    '#...##...##...',
   ],
-  [ // frame B — skirt phase-shifted, two feet down
-    '....######....',
+  [ // frame B — the same wave shifted two pixels right
+    '.....####.....',
+    '...########...',
     '..##########..',
     '.############.',
     '##############',
@@ -343,14 +370,13 @@ const HUNTER_BODY = [
     '##############',
     '##############',
     '##############',
-    '##############',
-    '##############',
-    '####..##..####',
-    '###...##...###',
+    '###..###..###.',
+    '.##...##...##.',
+    '.##...##...##.',
   ],
 ];
 /* Eye whites: two 4x4 blocks. Pupils are 2x2 and shove toward the heading. */
-const EYE_W = 4, EYE_H = 4, EYE_Y = 4;
+const EYE_W = 4, EYE_H = 4, EYE_Y = 5;
 const EYE_X = [2, 8];
 const PUPIL_OFF = {
   left:  { x: 0, y: 1 },
@@ -362,8 +388,10 @@ const PUPIL_OFF = {
 const FRIGHT_FACE = [
   { x: 3, y: 5, w: 2, h: 2 }, { x: 9, y: 5, w: 2, h: 2 },  // eyes
 ];
+/* Period 4, not 2: a one-pixel zigzag aliases into a dim uniform band on a
+   CRT and shimmers as the sprite moves. */
 const FRIGHT_MOUTH_Y = 9;
-const FRIGHT_MOUTH = [1, 3, 5, 7, 9, 11];  // zigzag peak columns
+const FRIGHT_MOUTH = [1, 5, 9];
 
 function makeCanvas(w, h) {
   const cv = document.createElement('canvas');
@@ -398,8 +426,8 @@ function renderHunterFrame(color, frame, dir, mode) {
     g.fillStyle = (mode === 'fright') ? PAL.peach : PAL.red;
     FRIGHT_FACE.forEach(e => g.fillRect(ox + e.x, oy + e.y, e.w, e.h));
     FRIGHT_MOUTH.forEach(mx => {
-      g.fillRect(ox + mx, oy + FRIGHT_MOUTH_Y + 1, 1, 1);
-      g.fillRect(ox + mx + 1, oy + FRIGHT_MOUTH_Y, 1, 1);
+      g.fillRect(ox + mx, oy + FRIGHT_MOUTH_Y + 1, 2, 1);
+      g.fillRect(ox + mx + 2, oy + FRIGHT_MOUTH_Y, 2, 1);
     });
   } else {
     g.fillStyle = PAL.eyeWhite;
@@ -412,51 +440,56 @@ function renderHunterFrame(color, frame, dir, mode) {
 
 /* Evader: "GOB" — a jag-mouthed yellow glutton. 13-wide, faces right.
    Three mouth frames: closed / half / open, with visible teeth. */
+/* 14x14 to match the hunters exactly: the two species have to share a size
+   and a centerline or they cannot both sit on one corridor. */
 const GOB_FRAMES = [
   [ // closed: full disc, mouth a thin seam
-    '....#####....',
-    '..#########..',
-    '.###########.',
-    '.######EE###.',
-    '#############',
-    '#############',
-    '######.......',
-    '#############',
-    '#############',
-    '.###########.',
-    '.###########.',
-    '..#########..',
-    '....#####....',
+    '....######....',
+    '..##########..',
+    '.############.',
+    '.#####EE#####.',
+    '##############',
+    '##############',
+    '##############',
+    '#######.......',
+    '##############',
+    '##############',
+    '.############.',
+    '.############.',
+    '..##########..',
+    '....######....',
   ],
   [ // half open: about 45 degrees
-    '....#####....',
-    '..#########..',
-    '.###########.',
-    '.######EE###.',
-    '###########..',
-    '#########....',
-    '######.......',
-    '#########....',
-    '###########..',
-    '.###########.',
-    '.###########.',
-    '..#########..',
-    '....#####....',
+    '....######....',
+    '..##########..',
+    '.############.',
+    '.#####EE#####.',
+    '##############',
+    '############..',
+    '##########....',
+    '#######.......',
+    '##########....',
+    '############..',
+    '.############.',
+    '.############.',
+    '..##########..',
+    '....######....',
   ],
   [ // wide open: a true 90 degree gape
-    '....#####....',
-    '..#########..',
-    '.###########.',
-    '.######EE###.',
-    '########.....',
-    '#######......',
-    '######.......',
-    '#######......',
-    '########.....',
-    '.###########.',
-    '.###########.',
-    '..#########..',
-    '....#####....',
+    '....######....',
+    '..##########..',
+    '.############.',
+    '.#####EE#####.',
+    '##########....',
+    '#########.....',
+    '########......',
+    '#######.......',
+    '########......',
+    '#########.....',
+    '##########....',
+    '.############.',
+    '..##########..',
+    '....######....',
   ],
 ];
 
@@ -470,7 +503,7 @@ function renderGobFrame(frame, dir) {
   else if (dir === 'down') g.rotate(Math.PI / 2);
   g.translate(-8, -8);
   const grid = GOB_FRAMES[frame];
-  const ox = 2, oy = 2;
+  const ox = 1, oy = 1;   // same 14x14 footprint and center as a hunter
   for (let y = 0; y < grid.length; y++) {
     for (let x = 0; x < grid[y].length; x++) {
       const ch = grid[y][x];
@@ -575,6 +608,40 @@ function renderHunterDissolve(color, step, steps) {
   return cv;
 }
 
+/* Purpose-drawn 8x8 HUD icons. Downscaling the 16x16 sprites would throw
+   away every other pixel and mangle the faces. */
+const MINI_HUNTER = [
+  '..####..',
+  '.######.',
+  '########',
+  '#WW##WW#',
+  '#WW##WW#',
+  '########',
+  '########',
+  '#.##.##.',
+];
+const MINI_GOB = [
+  '..####..',
+  '.######.',
+  '#####...',
+  '####....',
+  '#####...',
+  '.######.',
+  '..####..',
+  '........',
+];
+function renderMini(grid, colors) {
+  const cv = makeCanvas(8, 8);
+  const g = cv.getContext('2d');
+  for (let y = 0; y < grid.length; y++) {
+    for (let x = 0; x < grid[y].length; x++) {
+      const c = colors[grid[y][x]];
+      if (c) { g.fillStyle = c; g.fillRect(x, y, 1, 1); }
+    }
+  }
+  return cv;
+}
+
 /* Sprite bank, built once at boot */
 const SPRITES = { hunters: {}, gob: {}, fruit: [], dissolve: {}, minis: {} };
 function buildSprites() {
@@ -593,23 +660,13 @@ function buildSprites() {
     const steps = 6, dis = [];
     for (let s = 0; s < steps; s++) dis.push(renderHunterDissolve(h.color, s, steps));
     SPRITES.dissolve[h.key] = dis;
-    // mini icon for HUD (downsample 2:1)
-    const mini = makeCanvas(8, 8);
-    const mg = mini.getContext('2d');
-    mg.imageSmoothingEnabled = false;
-    mg.drawImage(bank.normal.right[0], 0, 0, 16, 16, 0, 0, 8, 8);
-    SPRITES.minis[h.key] = mini;
+    SPRITES.minis[h.key] = renderMini(MINI_HUNTER, { '#': h.color, W: PAL.white });
   });
   DIR_NAMES.forEach(d => {
     SPRITES.gob[d] = [0, 1, 2].map(f => renderGobFrame(f, d));
   });
   for (let i = 0; i < FRUIT_ART.length; i++) SPRITES.fruit.push(renderFruit(i));
-  // gob mini for HUD
-  const gm = makeCanvas(8, 8);
-  const gg = gm.getContext('2d');
-  gg.imageSmoothingEnabled = false;
-  gg.drawImage(SPRITES.gob.right[2], 0, 0, 16, 16, 0, 0, 8, 8);
-  SPRITES.minis.gob = gm;
+  SPRITES.minis.gob = renderMini(MINI_GOB, { '#': PAL.yellow });
 }
 
 /* ------------------------------- audio ----------------------------------
@@ -976,7 +1033,7 @@ class Hunter {
     // active
     const fright = game.frightT > 0;
     const t = this.tile();
-    const inTunnel = TUNNEL_ROWS.includes(t.r) && (t.c < 5 || t.c > 22);
+    const inTunnel = TUNNEL_ROWS.includes(t.r) && (t.c <= 6 || t.c >= 21);
     this.speed = fright ? game.params.hunterFrightSpeed
                : inTunnel ? game.params.hunterTunnelSpeed
                : game.params.hunterSpeed;
@@ -1217,19 +1274,23 @@ function pointAlong(tiles, dist) {
 function drawTrail(g, tiles, color, opts) {
   const { fromIdx = 0, closed = false, ants = 0, faint = false, beads = null, closable = false } = opts || {};
   const yOff = HUD_TOP * TILE;
-  // dashes along each segment, marching toward the head
+  /* A 1px dash on an 8px period. Pellets are 2x2 on the same lattice, so the
+     order line has to differ in weight, not just hue -- at 2x2 in a corridor
+     full of food the two read as the same object. */
   g.fillStyle = color;
-  const phase = ants % 4;
   const start = Math.max(1, fromIdx);
   const all = closed ? tiles.concat([tiles[0]]) : tiles;
   for (let i = start; i < all.length; i++) {
     const a = all[i - 1], b = all[i];
-    let dc = b.c - a.c, dr = b.r - a.r;
+    const dc = b.c - a.c, dr = b.r - a.r;
     if (Math.abs(dc) > 1) continue;                    // wrap seam: no line
-    for (let s = phase; s < TILE; s += 4) {
+    for (let s = 0; s < TILE; s++) {
+      // phase is keyed to absolute position so the dash never drifts
       const x = tcx(a.c) + dc * s, y = tcy(a.r) + dr * s;
-      if (faint && ((i + (s >> 2)) % 2 === 0)) continue;
-      g.fillRect(Math.round(x) - 1, Math.round(y) - 1 + yOff, 2, 2);
+      const along = (dc !== 0 ? x : y) + ants;
+      if ((((along % 8) + 8) % 8) >= 4) continue;
+      if (faint && (((along / 4) | 0) % 2 === 0)) continue;
+      g.fillRect(Math.round(x), Math.round(y) + yOff, 1, 1);
     }
   }
   if (!tiles.length) return;
@@ -1391,7 +1452,7 @@ class Evader {
     this.animT++;
     const fright = game.frightT > 0;
     const t = this.tile();
-    const inTunnel = TUNNEL_ROWS.includes(t.r) && (t.c < 5 || t.c > 22);
+    const inTunnel = TUNNEL_ROWS.includes(t.r) && (t.c <= 6 || t.c >= 21);
     const boost = game.evaderBoostT > 0 ? 1.12 : 1;
     this.speed = boost * (fright ? game.params.evaderFrightSpeed
                : inTunnel ? game.params.evaderSpeed          // he owns the tunnels
@@ -1558,14 +1619,20 @@ class Evader {
 
 /* ------------------------------ level params ---------------------------- */
 
+/* The speed ratios are the game's thesis, so they are chosen, not inherited:
+   the evader is always a little faster than a hunter (about 1.12:1), which
+   makes a straight chase lose by construction and forces the player to cut
+   him off instead. Frightened hunters and hunters in the tunnel are slower
+   still -- those are the costs of letting him reach an energizer or the
+   wrap. test/speed-audit.js measures what these actually produce in play. */
 function levelParams(n) {
   const base = 1.26;   // px per tick at full arcade speed
   return {
     evaderSpeed: Math.min(0.84 + 0.018 * (n - 1), 1.02) * base,
     evaderFrightSpeed: Math.min(0.95 + 0.01 * (n - 1), 1.05) * base,
     hunterSpeed: Math.min(0.75 + 0.012 * (n - 1), 0.92) * base,
-    hunterTunnelSpeed: 0.45 * base,
-    hunterFrightSpeed: 0.55 * base,
+    hunterTunnelSpeed: 0.55 * base,
+    hunterFrightSpeed: 0.68 * base,
     eyeSpeed: 1.9 * base,
     frightTicks: Math.max(420 - 35 * (n - 1), 120),
     respawnTicks: Math.max(420 - 20 * (n - 1), 180),
@@ -2010,6 +2077,8 @@ function layout() {
   screenCanvas.height = NATIVE_H * scale;
   screenCtx = screenCanvas.getContext('2d');
   screenCtx.imageSmoothingEnabled = false;
+  /* BEGIN CRT PASS -- everything below models the glass, not the board. It
+     runs on the scaled-up display canvas and never touches the palette. */
   // scanline overlay
   scanlines = makeCanvas(NATIVE_W * scale, NATIVE_H * scale);
   const sg = scanlines.getContext('2d');
@@ -2031,6 +2100,7 @@ function layout() {
   grad.addColorStop(1, 'rgba(0,0,0,0.35)');
   vg.fillStyle = grad;
   vg.fillRect(0, 0, NATIVE_W * scale, NATIVE_H * scale);
+  /* END CRT PASS */
 }
 
 function drawDots(g, color) {
@@ -2069,7 +2139,7 @@ function drawHUD(g) {
   const shown = Math.min(game.level, 7);
   for (let i = 0; i < shown; i++) {
     const idx = (game.level - shown + i) % FRUIT_ART.length;
-    g.drawImage(SPRITES.fruit[idx], NATIVE_W - 18 - (shown - 1 - i) * 14, by - 6, 14, 14);
+    g.drawImage(SPRITES.fruit[idx], NATIVE_W - 20 - (shown - 1 - i) * 13, by - 6);
   }
 }
 
@@ -2147,6 +2217,10 @@ function drawPlayfield(g) {
       drawTrail(g, tiles, h.color, { closed: h.path.closed, ants: -(uiFrame >> 2), faint: true });
     });
   }
+  /* The order overlay belongs to the background layer, so it goes down before
+     the sprites: hardware gave sprites priority, and a lattice dot punched
+     through a hunter's eye is the one artifact that cannot be explained. */
+  if (game.phase === 'command') drawCommandOverlay(g);
   // actors
   if (game.phase === 'capture') {
     // spin the caught evader
@@ -2165,26 +2239,40 @@ function drawPlayfield(g) {
   } else {
     game.hunters.forEach(h => h.draw(g, game));
   }
-  // popups
+  // popups, held inside the screen so an edge capture still reads
   game.popups.forEach(p => {
-    drawTextCentered(g, p.text, p.x, Math.max(0, p.y + yOff - (90 - p.t) / 6), p.color);
+    const half = p.text.length * 4;
+    const x = Math.max(half + 2, Math.min(NATIVE_W - half - 2, p.x));
+    drawTextCentered(g, p.text, x, Math.max(0, p.y + yOff - (90 - p.t) / 6), p.color);
   });
   /* The message slot: the one place on the board where text belongs, the
      same row the round-start banner uses. Everything routes through here. */
-  const msgY = tcy(17) + yOff - 3;
   if (game.phase === 'ready') {
-    drawTextCentered(g, 'READY!', NATIVE_W / 2, msgY, PAL.yellow);
+    drawMessage(g, 'READY!', PAL.yellow);
   } else if (game.phase === 'escaped') {
-    drawTextCentered(g, 'TARGET ESCAPED', NATIVE_W / 2, msgY, PAL.red);
+    drawMessage(g, 'TARGET ESCAPED', PAL.red);
   } else if (game.phase === 'gameover') {
-    drawTextCentered(g, 'GAME  OVER', NATIVE_W / 2, msgY, PAL.red);
+    drawMessage(g, 'GAME  OVER', PAL.red);
   } else if (game.phase === 'command') {
-    if ((uiFrame / 20 | 0) % 2 === 0) drawTextCentered(g, 'COMMAND', NATIVE_W / 2, msgY, PAL.cyan);
+    if ((uiFrame / 20 | 0) % 2 === 0) drawMessage(g, 'COMMAND', PAL.cyan);
   } else if (game.phase === 'play' && game.hint && game.tick < 1200
              && (uiFrame / 24 | 0) % 2 === 0) {
-    drawTextCentered(g, 'GRAB A GHOST', NATIVE_W / 2, msgY, PAL.peach);
+    drawMessage(g, 'GRAB A GHOST', PAL.peach);
   }
-  if (game.phase === 'command') drawCommandOverlay(g);
+}
+
+/* The board's one message slot. Text occupies whole tile cells and blanks
+   whatever they held, the way a tilemap banner did, so the letters never
+   crowd a maze line or sit in a lane of pellets. */
+const MSG_ROW = 17;
+function drawMessage(g, text, color) {
+  const yOff = HUD_TOP * TILE;
+  const cells = text.length;
+  const x0 = Math.round(NATIVE_W / 2 - cells * 4);
+  const y0 = MSG_ROW * TILE + yOff;
+  g.fillStyle = PAL.black;
+  g.fillRect(x0 - 8, y0, cells * 8 + 16, TILE);
+  drawText(g, text, x0, y0, color);
 }
 
 /* ------------------------------ attract mode ---------------------------- */
@@ -2297,14 +2385,14 @@ function render() {
     drawHUD(g);
   }
 
-  // composite to screen with CRT treatment
+  /* BEGIN CRT PASS -- composite the finished frame onto the glass. */
   const sctx = screenCtx;
   let sx = 0, sy = 0;
   if (game.shakeT > 0) {
     game.shakeT--;
     sx = ((uiFrame % 2) * 2 - 1) * scale;
   }
-  sctx.fillStyle = '#000';
+  sctx.fillStyle = PAL.black;
   sctx.fillRect(0, 0, screenCanvas.width, screenCanvas.height);
   sctx.imageSmoothingEnabled = false;
   sctx.drawImage(native, sx, sy, NATIVE_W * scale, NATIVE_H * scale);
@@ -2319,6 +2407,7 @@ function render() {
   // scanlines + vignette
   sctx.drawImage(scanlines, 0, 0);
   sctx.drawImage(vignette, 0, 0);
+  /* END CRT PASS */
 }
 
 /* -------------------------------- boot ---------------------------------- */
@@ -2337,6 +2426,9 @@ function boot() {
   screenCanvas = document.getElementById('screen');
   native = makeCanvas(NATIVE_W, NATIVE_H);
   nativeCtx = native.getContext('2d');
+  // Nothing on this canvas may ever be resampled: a smoothed blit invents
+  // colors that are not in the palette.
+  nativeCtx.imageSmoothingEnabled = false;
   layout();
   bindInput();
   enterAttract();

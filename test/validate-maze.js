@@ -3,7 +3,7 @@ const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'ga
 const m = src.match(/const MAZE_SRC = \[([\s\S]*?)\];/);
 const rows = [...m[1].matchAll(/'([^']*)'/g)].map(x => x[1]);
 const COLS = 28, ROWS = rows.length;
-const TUNNELS = [11, 20];
+const TUNNELS = [14];
 let errs = [], warn = [];
 
 if (ROWS !== 31) errs.push(`rows=${ROWS} expected 31`);
