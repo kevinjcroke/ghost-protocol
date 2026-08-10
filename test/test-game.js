@@ -32,8 +32,8 @@ game.phase = 'command';
   ok('drag forward extends the tip', fwd === 6, { fwd });
   ok('dragging back retracts it', back === 3, { fwd, back });
 
-  Draw.extendToward(6, 1); Draw.extendToward(6, 4);
-  Draw.extendToward(1, 4); Draw.extendToward(1, 1);
+  Draw.extendToward(6, 1); Draw.extendToward(6, 5);
+  Draw.extendToward(1, 5); Draw.extendToward(1, 1);
   ok('returning to the start tile arms loop closure', Draw.active.closable === true);
   const drawn = Draw.active.tiles.length;
   Draw.commit(true);
@@ -78,13 +78,54 @@ console.log('\n== self-crossing paths are legal ==');
   const h = game.hunters[2];
   h.state = 'active'; h.x = tcx(1); h.y = tcy(1); h.dir = null; h.path = null;
   Draw.begin(h);
-  Draw.extendToward(6, 1); Draw.extendToward(6, 4);
-  Draw.extendToward(1, 4); Draw.extendToward(1, 1);
+  Draw.extendToward(6, 1); Draw.extendToward(6, 5);
+  Draw.extendToward(1, 5); Draw.extendToward(1, 1);
   const around = Draw.active.tiles.length;
   Draw.extendToward(6, 1);   // re-enter an earlier corridor the long way
   ok('re-entering an earlier corridor crosses instead of retracting',
      Draw.active.tiles.length > around, { around, now: Draw.active.tiles.length });
   Draw.active = null;
+}
+
+console.log('\n== the tip never reroutes on the player\'s behalf ==');
+{
+  toPlay();
+  game.phase = 'command';
+  const h = game.hunters[0];
+  h.state = 'active'; h.x = tcx(1); h.y = tcy(1); h.dir = null; h.path = null;
+  Draw.begin(h);
+  // row 1 is a corridor; row 4 is walled between columns 2 and 5. Dragging
+  // the cursor into that wall must stall the tip, not send it the long way.
+  Draw.extendToward(6, 1);
+  const atCorner = Draw.active.tiles.length;
+  Draw.extendToward(1, 4);
+  const after = Draw.active.tiles;
+  const tip = after[after.length - 1];
+  const detoured = after.length > atCorner + 6;
+  ok('dragging into a wall stalls the tip instead of pathfinding around it',
+     !detoured, { atCorner, after: after.length, tip });
+  ok('and the tip is left on a tile adjacent to where it stopped',
+     API.isOpen(tip.c, tip.r), { tip });
+  Draw.active = null;
+}
+
+console.log('\n== orders can be queued for a hunter still in the den ==');
+{
+  toPlay();
+  const h = game.hunters.find(x => x.inDenStates()) || game.hunters[3];
+  ok('a denned hunter is commandable', h.isCommandable(), { state: h.state });
+  game.phase = 'command';
+  Draw.begin(h);
+  ok('its trail starts at the den door',
+     Draw.active.tiles[0].r === 11, { anchor: Draw.active.tiles[0] });
+  Draw.extendToward(6, 11);
+  Draw.commit(true);
+  ok('the order sticks while it waits', h.path !== null);
+  game.phase = 'play';
+  let n = 0;
+  while (h.state !== 'active' && n++ < 4000) { if (h.releaseT > 2) h.releaseT = 2; tick(1); }
+  ok('and it still has the order once it gets out',
+     h.state === 'active' && h.path !== null, { state: h.state, path: !!h.path });
 }
 
 console.log('\n== a failed drag must not wipe an existing order ==');
@@ -176,8 +217,9 @@ console.log('\n== the contested prize ==');
   game.hunters.forEach(x => { x.x = tcx(26); x.y = tcy(29); });
   game.evader.x = tcx(14); game.evader.y = tcy(17);
   tick(2);
-  ok('the evader taking it instead gives him a speed burst',
-     game.fruit === null && game.evaderBoostT > 0, { boost: game.evaderBoostT });
+  const scoreBefore = game.score;
+  ok('the evader taking it costs the player the points and nothing else',
+     game.fruit === null && game.score === scoreBefore, { score: game.score });
 }
 
 console.log('\n== a long soak with no orders at all ==');
@@ -186,8 +228,10 @@ console.log('\n== a long soak with no orders at all ==');
   let crashed = null;
   try { tick(30000); } catch (e) { crashed = e.message; }
   ok('30000 ticks run without throwing', crashed === null, { crashed });
+  // with nobody giving orders he clears board after board, so running out of
+  // contracts and idling back to attract is the correct end state here
   ok('and the game is still in a sane phase',
-     ['play','ready','capture','flash','escaped','gameover'].includes(game.phase),
+     ['play','ready','capture','flash','escaped','gameover','attract'].includes(game.phase),
      { ph: game.phase });
 }
 

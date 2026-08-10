@@ -896,7 +896,15 @@ class Hunter {
   }
   tile() { return tileOfPx(this.x, this.y); }
   isThreat() { return this.state === 'active'; }
-  isCommandable() { return this.state === 'active'; }
+  /* A hunter waiting in the den can still be given orders -- it just starts
+     walking them when it gets out. Refusing the click reads as a dead
+     control, and the player has nothing else to do while it waits. */
+  isCommandable() { return this.state !== 'dissolving' && this.state !== 'eyes'; }
+  inDenStates() {
+    return this.state === 'idle' || this.state === 'respawn'
+        || this.state === 'enteringDen' || this.state === 'exitingDen'
+        || this.state === 'exiting';
+  }
 
   clearOrder() { this.path = null; }
   setOrder(tiles, closed) {
@@ -1043,7 +1051,7 @@ class Hunter {
   beginExit() {
     this.state = 'exitingDen';
     this.dir = 'up';
-    this.path = null;
+    // any order queued while it waited survives the trip out
   }
 
   /* struck while frightened */
@@ -1146,7 +1154,9 @@ function bfsRoute(from, to, maxDepth) {
    - timing beads mark equal travel-time points across all four trails
 ------------------------------------------------------------------------- */
 
-const BEAD_TICKS = 24;          // one bead per this many game ticks of travel
+/* One bead per this many ticks of travel. Dense enough that a bead is worth
+   about two tiles, which is the precision a pincer is actually decided by. */
+const BEAD_TICKS = 15;
 
 const Draw = {
   active: null,     // { hunter, tiles:[{c,r}], closable }
@@ -1159,6 +1169,8 @@ const Draw = {
   },
   /* start the trail at the tile the hunter will next be centered in */
   anchorFor(hunter) {
+    // one still in the den will emerge at the door, so draw from there
+    if (hunter.inDenStates()) return { c: DOOR_C0, r: DEN_EXIT_ROW };
     const t = hunter.tile();
     if (hunter.dir) {
       const d = DIRS[hunter.dir];
@@ -1171,23 +1183,41 @@ const Draw = {
     return { c: t.c, r: t.r };
   },
 
+  /* The tip crawls toward the cursor one adjacent tile at a time. It never
+     pathfinds: if the cursor is somewhere the tip cannot reach by continuing
+     along the corridor it is in, the tip stops and waits at the last legal
+     tile until the cursor comes somewhere it can follow. Routing around a
+     wall on the player's behalf turns a fourteen-tile order into a
+     forty-tile horseshoe they never drew. */
   extendToward(mc, mr) {
     const a = this.active;
     if (!a) return;
-    if (!isOpen(mc, mr) || (mc >= 0 && mc < COLS && inDen(mc, mr))) return;  // wall: tip waits
     let guard = 0;
-    while (guard++ < 80) {
+    while (guard++ < 40) {
       const tip = a.tiles[a.tiles.length - 1];
-      if (tip.c === wrapCol(mc) && tip.r === mr) break;
-      const route = bfsRoute(tip, { c: wrapCol(mc), r: mr }, 48);
-      if (!route || route.length < 2) break;
-      const next = route[1];
-      const prev = a.tiles.length >= 2 ? a.tiles[a.tiles.length - 2] : null;
-      if (prev && prev.c === next.c && prev.r === next.r) {
-        a.tiles.pop();                        // retraction: eat the tip
-      } else {
-        a.tiles.push({ c: next.c, r: next.r });
+      let dc = wrapCol(mc) - tip.c;
+      if (dc > COLS / 2) dc -= COLS;
+      if (dc < -COLS / 2) dc += COLS;
+      const dr = mr - tip.r;
+      if (dc === 0 && dr === 0) break;
+
+      // try the axis with further to go first, then the other one
+      const horiz = { x: Math.sign(dc), y: 0 };
+      const vert = { x: 0, y: Math.sign(dr) };
+      const order = Math.abs(dc) >= Math.abs(dr) ? [horiz, vert] : [vert, horiz];
+
+      let stepped = false;
+      for (const s of order) {
+        if (!s.x && !s.y) continue;
+        const nc = wrapCol(tip.c + s.x), nr = tip.r + s.y;
+        if (!isOpen(nc, nr) || inDen(nc, nr)) continue;
+        const prev = a.tiles.length >= 2 ? a.tiles[a.tiles.length - 2] : null;
+        if (prev && prev.c === nc && prev.r === nr) a.tiles.pop();  // retract
+        else a.tiles.push({ c: nc, r: nr });
+        stepped = true;
+        break;
       }
+      if (!stepped) break;            // hemmed in: the tip waits
     }
     const tip = a.tiles[a.tiles.length - 1];
     a.closable = a.tiles.length >= 5
@@ -1270,10 +1300,46 @@ function pointAlong(tiles, dist) {
   return null;
 }
 
+/* Where a hunter actually ends up: running off an open path it keeps its last
+   heading until a wall stops it. Showing that coast removes the game's most
+   common surprise without softening the rule. */
+function runOutFrom(tiles) {
+  if (tiles.length < 2) return [];
+  const tip = tiles[tiles.length - 1], back = tiles[tiles.length - 2];
+  let dc = tip.c - back.c, dr = tip.r - back.r;
+  if (dc > 1) dc = -1; if (dc < -1) dc = 1;
+  const out = [];
+  let c = tip.c, r = tip.r, guard = 0;
+  while (guard++ < 40) {
+    const nc = wrapCol(c + dc), nr = r + dr;
+    if (!isOpen(nc, nr) || inDen(nc, nr)) break;
+    out.push({ c: nc, r: nr });
+    c = nc; r = nr;
+  }
+  return out;
+}
+
 /* draw one trail (committed or in-progress) */
 function drawTrail(g, tiles, color, opts) {
-  const { fromIdx = 0, closed = false, ants = 0, faint = false, beads = null, closable = false } = opts || {};
+  const { fromIdx = 0, closed = false, ants = 0, faint = false, beads = null,
+          closable = false, runOut = null } = opts || {};
   const yOff = HUD_TOP * TILE;
+  // the coast past the arrowhead, sparser so it reads as "and then it drifts"
+  if (runOut && runOut.length) {
+    g.fillStyle = color;
+    const chain = [tiles[tiles.length - 1]].concat(runOut);
+    for (let i = 1; i < chain.length; i++) {
+      const a = chain[i - 1], b = chain[i];
+      const ddc = b.c - a.c, ddr = b.r - a.r;
+      if (Math.abs(ddc) > 1) continue;
+      for (let s = 0; s < TILE; s += 4) {
+        g.fillRect(Math.round(tcx(a.c) + ddc * s), Math.round(tcy(a.r) + ddr * s) + yOff, 1, 1);
+      }
+    }
+    const end = chain[chain.length - 1];
+    g.fillRect(tcx(end.c) - 2, tcy(end.r) - 2 + yOff, 5, 1);
+    g.fillRect(tcx(end.c) - 2, tcy(end.r) + 2 + yOff, 5, 1);
+  }
   /* A 1px dash on an 8px period. Pellets are 2x2 on the same lattice, so the
      order line has to differ in weight, not just hue -- at 2x2 in a corridor
      full of food the two read as the same object. */
@@ -1315,21 +1381,27 @@ function drawTrail(g, tiles, color, opts) {
     else if (dr === 1) { g.fillRect(tx - 1, ty, 3, 1); g.fillRect(tx - 2, ty + 1, 5, 1); g.fillRect(tx, ty + 2, 1, 1); g.fillRect(tx, ty + 3, 1, 1); }
     else { g.fillRect(tx - 1, ty, 3, 1); g.fillRect(tx - 2, ty - 1, 5, 1); g.fillRect(tx, ty - 2, 1, 1); g.fillRect(tx, ty - 3, 1, 1); }
   }
-  // timing beads
+  /* Timing beads: equal travel time, not equal distance. They have to be a
+     different SHAPE from the 1px dash or they disappear into it, and a
+     coincidence has to be white -- highlighting it in a hunter's own colour
+     just reads as two trails crossing. */
   if (beads) {
     const walkTiles = closed ? tiles.concat([tiles[0]]) : tiles;
     for (let k = 1; k <= beads.count; k++) {
       const p = pointAlong(walkTiles, k * beads.spacing);
       if (!p) break;
+      const x = Math.round(p.x), y = Math.round(p.y) + yOff;
       const hot = beads.hot && beads.hot.has(k);
-      g.fillStyle = hot ? PAL.white : color;
       if (hot) {
-        g.fillRect(Math.round(p.x) - 2, Math.round(p.y) - 2 + yOff, 4, 4);
-        g.fillStyle = color;
-        g.fillRect(Math.round(p.x) - 1, Math.round(p.y) - 1 + yOff, 2, 2);
+        // a solid pip with a ring: this is where two hunters coincide in time
+        g.fillStyle = PAL.white;
+        g.fillRect(x - 1, y - 3, 3, 1); g.fillRect(x - 1, y + 3, 3, 1);
+        g.fillRect(x - 3, y - 1, 1, 3); g.fillRect(x + 3, y - 1, 1, 3);
+        g.fillRect(x - 1, y - 1, 3, 3);
       } else {
-        g.fillRect(Math.round(p.x) - 2, Math.round(p.y) + yOff - 1, 1, 2);
-        g.fillRect(Math.round(p.x) + 1, Math.round(p.y) + yOff - 1, 1, 2);
+        g.fillStyle = color;
+        g.fillRect(x - 1, y, 3, 1);     // a cross reads as a mark, not a dash
+        g.fillRect(x, y - 1, 1, 3);
       }
     }
   }
@@ -1453,10 +1525,9 @@ class Evader {
     const fright = game.frightT > 0;
     const t = this.tile();
     const inTunnel = TUNNEL_ROWS.includes(t.r) && (t.c <= 6 || t.c >= 21);
-    const boost = game.evaderBoostT > 0 ? 1.12 : 1;
-    this.speed = boost * (fright ? game.params.evaderFrightSpeed
+    this.speed = fright ? game.params.evaderFrightSpeed
                : inTunnel ? game.params.evaderSpeed          // he owns the tunnels
-               : game.params.evaderSpeed * (1 + game.boldness() * 0.06));
+               : game.params.evaderSpeed * (1 + game.boldness() * 0.06);
     const moved = stepEntity(this, (e, ws) => this.decide(game, ws));
     if (moved && this.animT % 4 === 0) this.frame = (this.frame + 1) % 4;
 
@@ -1570,6 +1641,11 @@ class Evader {
         const margin2 = minMargin + exits.length * 2;
         let score = Math.min(minMargin, 60) * 3 + exits.length * 5
           + snacks * 1.2 + fruitBonus * (minMargin > 20 ? 14 : 0);
+        // when it is safe, head toward whatever food is left
+        if (minMargin > 18 && game.foodDist && c >= 0 && c < COLS) {
+          const fd = game.foodDist[r * COLS + wrapCol(c)];
+          if (fd >= 0) score += Math.max(0, 24 - fd) * 1.1;
+        }
         // cornered? an energizer run is worth everything
         if (energ) score += (minMargin < 25 ? 80 : game.frightT > 0 ? -40 : 6);
         if (tunnelBonus && minMargin < 30) score += 18;
@@ -1619,18 +1695,21 @@ class Evader {
 
 /* ------------------------------ level params ---------------------------- */
 
-/* The speed ratios are the game's thesis, so they are chosen, not inherited:
-   the evader is always a little faster than a hunter (about 1.12:1), which
-   makes a straight chase lose by construction and forces the player to cut
-   him off instead. Frightened hunters and hunters in the tunnel are slower
-   still -- those are the costs of letting him reach an energizer or the
-   wrap. test/speed-audit.js measures what these actually produce in play. */
+/* The speed ratios are the game's thesis, so they are chosen, not inherited.
+   Hunters run at near parity with the evader -- he keeps only a couple of
+   percent. Their real handicap is that they cannot improvise: they walk what
+   was drawn and nothing else, while he re-decides at every junction and can
+   read the orders already committed. Making them outright slow instead was
+   worse: it meant nothing could ever be run down, so three of the four
+   hunters were irrelevant and the player spent the middle of every board
+   watching rather than playing.
+   test/speed-audit.js measures what these actually produce in play. */
 function levelParams(n) {
   const base = 1.26;   // px per tick at full arcade speed
   return {
     evaderSpeed: Math.min(0.84 + 0.018 * (n - 1), 1.02) * base,
     evaderFrightSpeed: Math.min(0.95 + 0.01 * (n - 1), 1.05) * base,
-    hunterSpeed: Math.min(0.75 + 0.012 * (n - 1), 0.92) * base,
+    hunterSpeed: Math.min(0.82 + 0.015 * (n - 1), 0.99) * base,
     hunterTunnelSpeed: 0.55 * base,
     hunterFrightSpeed: 0.68 * base,
     eyeSpeed: 1.9 * base,
@@ -1659,12 +1738,12 @@ const game = {
   dotsEaten: 0,
   fruit: null,          // {idx, timer}
   lastFruitAt: -1,
-  evaderBoostT: 0,      // ticks of stolen-prize speed left to him
   fruitHistory: [],
   hunters: [],
   evader: null,
   params: levelParams(1),
   hunterFutures: [[], [], [], []],
+  foodDist: null,
   hunterDistGrids: [null, null, null, null],
   releaseFlip: false,
   popups: [],           // {x, y, text, color, t}
@@ -1696,7 +1775,6 @@ const game = {
     if (rebuildDots) { buildMaze(); this.dotsEaten = 0; }
     this.resetActors();
     this.lastFruitAt = -1;
-    this.evaderBoostT = 0;
     this.phase = 'ready';
     this.phaseT = 0;
     this.demo = false;
@@ -1738,8 +1816,10 @@ const game = {
   },
 
   /* The prize under the den is contested: route a hunter over it and it is
-     ours, let him reach it first and he pockets it and gets a burst of
-     speed. It gives the drawing a second thing to be about. */
+     ours. He is always closer, so it stays a real decision -- is it worth
+     bending a hunter's path away from the hunt to deny him the points?
+     It used to hand him a speed burst as well, which made it a pure tax:
+     you could not win the race and lost the board when you didn't. */
   takeFruit(byHunter) {
     if (!this.fruit) return;
     const pts = FRUIT_POINTS[this.fruit.idx % FRUIT_POINTS.length];
@@ -1749,7 +1829,6 @@ const game = {
       this.addScore(pts);
       this.popup(DEN_EXIT_X, tcy(FRUIT_TILE.r), String(pts), PAL.cyan);
     } else {
-      this.evaderBoostT = 300;
       this.popup(DEN_EXIT_X, tcy(FRUIT_TILE.r), 'HE TOOK IT', PAL.magenta);
     }
   },
@@ -1764,6 +1843,32 @@ const game = {
       this.lastFruitAt = this.dotsEaten;
       this.fruit = { idx: (this.level - 1) % FRUIT_ART.length, timer: 600 };
     }
+  },
+
+  /* Distance from every tile to the nearest remaining dot. Without this he
+     evaluates only the corridor he can see down, so once the board is nearly
+     clear he mills around in emptied corridors instead of finishing it --
+     which reads as the AI losing interest exactly when it should be closing
+     the game out. */
+  refreshFoodModel() {
+    const dist = new Int16Array(COLS * MAZE_ROWS).fill(-1);
+    const q = [];
+    for (let r = 0; r < MAZE_ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (dots[r][c]) { dist[r * COLS + c] = 0; q.push({ c, r }); }
+      }
+    }
+    let head = 0;
+    while (head < q.length) {
+      const cur = q[head++];
+      const d0 = dist[cur.r * COLS + cur.c];
+      for (const n of neighborsOf(cur.c, cur.r)) {
+        if (n.c < 0 || n.c >= COLS) continue;
+        const i = n.r * COLS + n.c;
+        if (dist[i] === -1) { dist[i] = d0 + 1; q.push(n); }
+      }
+    }
+    this.foodDist = dist;
   },
 
   refreshThreatModel() {
@@ -1888,6 +1993,7 @@ const game = {
     }
 
     this.refreshThreatModel();
+    if (this.tick % 20 === 0 || !this.foodDist) this.refreshFoodModel();
 
     for (const h of this.hunters) {
       if (h.state === 'dissolving') {
@@ -1912,7 +2018,6 @@ const game = {
         }
       }
     }
-    if (this.evaderBoostT > 0) this.evaderBoostT--;
     this.pressureScore();
     Sound.tickSiren(this.sirenStage());
 
@@ -2160,16 +2265,21 @@ function drawCommandOverlay(g) {
   game.hunters.forEach((h, i) => {
     const isDrawing = Draw.active && Draw.active.hunter === h;
     const spacing = Math.max(2, game.params.hunterSpeed * BEAD_TICKS);
+    // each hunter's dashes sit on a different phase, so where two trails
+    // share a corridor you see both colours instead of only the last drawn
+    const ants = -(uiFrame >> 2) + i * 2;
     if (isDrawing) {
       drawTrail(g, Draw.active.tiles, h.color, {
-        ants: -(uiFrame >> 2), closable: Draw.active.closable,
-        beads: { spacing, count: 40, hot: hot[i] && hot[i].hot },
+        ants, closable: Draw.active.closable,
+        runOut: runOutFrom(Draw.active.tiles),
+        beads: { spacing, count: 60, hot: hot[i] && hot[i].hot },
       });
     } else if (h.path) {
       const tiles = h.path.tiles.slice(Math.max(0, h.path.idx - 1));
       drawTrail(g, h.path.closed ? h.path.tiles : tiles, h.color, {
-        closed: h.path.closed, ants: -(uiFrame >> 2),
-        beads: { spacing, count: 40, hot: hot[i] && hot[i].hot },
+        closed: h.path.closed, ants,
+        runOut: h.path.closed ? null : runOutFrom(h.path.tiles),
+        beads: { spacing, count: 60, hot: hot[i] && hot[i].hot },
       });
     }
     // ring the commandable hunters; mark the parked-and-stupid ones

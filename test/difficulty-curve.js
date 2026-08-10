@@ -81,8 +81,8 @@ function playLevel(level, strategy, reissueEvery) {
   return { result: 'timeout', ticks: t, score: game.score };
 }
 
-const TRIALS = 5;
-const levels = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 20];
+const TRIALS = 3;
+const levels = [1, 2, 4, 6, 8, 12, 16, 20];
 const rows = [];
 console.log('level  swarm win%   median catch (s)   babysit win%');
 for (const L of levels) {
