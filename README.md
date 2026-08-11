@@ -35,13 +35,20 @@ You cannot steer a ghost directly. You freeze time and **draw** where it walks.
 There is deliberately no "clear order" gesture: drawing a new order *is* the
 clear, so no click can ever silently disarm a ghost.
 
-**Ghosts don't camp.** A ghost that runs off the end of its path still coasts
-on its last heading — but the moment a wall stops it dead, the game freezes
-itself with that ghost pre-selected, and it will not unfreeze until every
-stalled ghost has somewhere to be. The roster says who's who: `ORDERED`,
-`PATROL`, `DRIFTING` (coasting, will stall at the next wall), `STALLED`
-(blocking the resume), `OVERDRIVE`, `DOWN`. The play button burns amber while
-anyone is stalled and goes green when the squad is ready.
+**The camp limit is yours to set.** A ghost that runs off the end of its path
+coasts on its last heading until a wall stops it dead — and then it may stand
+there, legally camping, for as long as your **CAMP LIMIT** allows (the chip
+above the roster: 0s / 3s / 5s / 10s / OFF, click to cycle, remembered
+between sessions). Past the limit the ghost goes overdue: the game freezes
+with it pre-selected and will not resume until it has somewhere to be. Set
+the limit OFF and the original cruelty rule returns undiluted — no forced
+pauses, ghosts camp forever, and nobody saves you from a forgotten statue.
+
+The roster reads the whole squad at a glance: `ORDERED`, `PATROL`,
+`DRIFTING` (coasting toward its stall), `CAMP 7` (parked, counting down to
+intervention), `CAMPED` (parked with the limit off), `ORDERS!` (overdue,
+blocking the resume), `OVERDRIVE`, `DOWN`. The play button burns amber while
+anyone is overdue and goes green when the squad is ready.
 
 Ghosts pile onto the same tile constantly — three of them leave the den
 together — and a click can only land on one. So each keeps a permanent number

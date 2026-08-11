@@ -282,6 +282,39 @@ console.log('\n== capture, pincer scoring, level flow ==');
      { lvl: game.level, ph: game.phase });
 }
 
+console.log('\n== the camp limit is a dial ==');
+{
+  // allowance: a ghost may stand parked up to the limit before intervention
+  toPlay();
+  game.phase = 'play';
+  game.campLimit = 300;
+  const h = game.hunters[1];
+  h.state = 'active'; h.x = tcx(1); h.y = tcy(1); h.dir = null; h.path = null;
+  h.campT = 0; h.overdue = false;
+  tick(120);
+  ok('camping inside the allowance does not freeze the game',
+     game.phase === 'play' && !h.overdue, { phase: game.phase, campT: h.campT });
+  tick(400);
+  ok('camping past the limit goes overdue and freezes',
+     h.overdue === true, { campT: h.campT });
+  // OFF: the original cruelty rule, nothing ever intervenes
+  toPlay();
+  game.phase = 'play';
+  game.campLimit = null;
+  const h2 = game.hunters[1];
+  h2.state = 'active'; h2.x = tcx(1); h2.y = tcy(1); h2.dir = null; h2.path = null;
+  h2.campT = 0; h2.overdue = false;
+  let froze = false;
+  for (let i = 0; i < 1200; i++) {
+    if (game.phase === 'command') froze = true;
+    tick(1);
+  }
+  ok('with the limit OFF a ghost camps forever, unfrozen',
+     !froze && !h2.overdue && h2.campT > 1000,
+     { froze, campT: h2.campT });
+  game.campLimit = 0;   // restore the harness default for later tests
+}
+
 console.log('\n== losing a board ==');
 {
   toPlay();

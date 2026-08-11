@@ -917,6 +917,8 @@ class Hunter {
     this.frame = 0; this.animT = 0;
     this.respawnT = 0;
     this.needsOrders = false;
+    this.campT = 0;
+    this.overdue = false;
     this.releaseT = 10 + this.slot * 30;    // rapid-fire den release: seconds, not a queue
     this.dissolveT = -1;
   }
@@ -934,6 +936,8 @@ class Hunter {
 
   clearOrder() { this.path = null; }
   setOrder(tiles, closed) {
+    this.campT = 0;
+    this.overdue = false;
     this.path = { tiles: tiles.slice(), closed, idx: 0 };
     // if the first tile is where we already are, aim at the next one
     const t = this.tile();
@@ -978,9 +982,8 @@ class Hunter {
       const d = DIRS[this.dir];
       if (!isOpen(t.c + d.x, t.r + d.y)) this.dir = null;
     }
-    /* Stopped dead with no order: ghosts don't camp. This flag freezes the
-       game and refuses to unfreeze until this ghost has somewhere to be. */
-    if (!this.dir && !this.path && this.state === 'active') this.needsOrders = true;
+    /* Stopped dead with no order: the camp clock (in update) decides when
+       the game intervenes. Camping is legal up to the player's limit. */
   }
 
   update(game) {
@@ -1078,6 +1081,20 @@ class Hunter {
 
     // active
     if (this.boostT > 0) this.boostT--;
+    /* The camp clock. Standing parked is legal up to the player's limit;
+       past it, this ghost goes overdue: the game freezes and will not
+       resume until it has orders. Limit null means camping is always fine
+       -- the original cruelty rule, undiluted. */
+    if (!this.path && !this.dir) {
+      this.campT++;
+      if (game.campLimit !== null && this.campT >= game.campLimit && !this.overdue) {
+        this.overdue = true;
+        this.needsOrders = true;
+      }
+    } else {
+      this.campT = 0;
+      this.overdue = false;
+    }
     const fright = game.frightT > 0;
     const t = this.tile();
     const inTunnel = TUNNEL_ROWS.includes(t.r) && (t.c <= 6 || t.c >= 21);
@@ -1918,6 +1935,10 @@ const game = {
   params: levelParams(1),
   hunterFutures: [[], [], [], []],
   parkedTiles: new Set(),
+  /* How long a ghost may stand parked before the game intervenes.
+     Player-tunable; null = camping is always allowed. */
+  campLimit: 600,
+  campChoice: 3,
   foodDist: null,
   hunterDistGrids: [null, null, null, null],
   releaseFlip: false,
@@ -2293,10 +2314,39 @@ function pauseToCommand() {
     game.hint = false;
   }
 }
-/* A stalled ghost: active, no order, stopped dead. Ghosts don't camp, so
-   while one exists the game will not unfreeze. */
+/* The camp-limit dial. A ghost may stand parked this long before the game
+   freezes and demands orders; OFF restores the original undiluted rule --
+   ghosts camp forever and nothing intervenes. */
+const CAMP_CHOICES = [
+  { label: '0S', ticks: 0 },
+  { label: '3S', ticks: 180 },
+  { label: '5S', ticks: 300 },
+  { label: '10S', ticks: 600 },
+  { label: 'OFF', ticks: null },
+];
+function loadCampChoice() {
+  let i = 3;   // default 10S
+  try { const s = localStorage.getItem('gpCampLimit'); if (s !== null) i = Number(s); } catch (e) {}
+  if (!(i >= 0 && i < CAMP_CHOICES.length)) i = 3;
+  game.campChoice = i;
+  game.campLimit = CAMP_CHOICES[i].ticks;
+}
+function cycleCampChoice() {
+  game.campChoice = (game.campChoice + 1) % CAMP_CHOICES.length;
+  game.campLimit = CAMP_CHOICES[game.campChoice].ticks;
+  try { localStorage.setItem('gpCampLimit', String(game.campChoice)); } catch (e) {}
+  // relax the rule mid-freeze and previously-overdue ghosts are pardoned
+  game.hunters.forEach(h => {
+    if (game.campLimit === null || h.campT < game.campLimit) h.overdue = false;
+  });
+  Sound.uiCommit();
+}
+
+/* An overdue ghost: camped past the player's own limit. While one exists
+   the game will not unfreeze. */
 function stalledHunter() {
-  return game.hunters.find(h => h.state === 'active' && !h.path && !h.dir) || null;
+  return game.hunters.find(h =>
+    h.state === 'active' && !h.path && !h.dir && h.overdue) || null;
 }
 function resumeFromCommand() {
   if (game.phase === 'command') {
@@ -2370,6 +2420,7 @@ function bindInput() {
     if (game.phase === 'command') {
       const dp = toDisplay(ev);
       if (inRect(dp, rosterUI.play)) { resumeFromCommand(); return; }
+      if (inRect(dp, rosterUI.camp)) { cycleCampChoice(); return; }
       const slot = rosterUI.slots.find(s => inRect(dp, s));
       if (slot) {
         const h = game.hunters[slot.i];
@@ -3174,7 +3225,7 @@ function drawOrderLayer(ctx, ox, oy) {
    and a button down here. Clicking a name selects that ghost and floats it
    to the front of the pile; the PLAY button unfreezes without the keyboard.
    Slot rectangles are stored each frame for the mousedown hit test. */
-const rosterUI = { slots: [], play: null };
+const rosterUI = { slots: [], play: null, camp: null };
 
 function plate(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -3236,17 +3287,49 @@ function drawRoster(ctx, ox, oy) {
     ctx.fillText(h.def.name, x + S * 12, y + h0 * 0.34);
 
     ctx.font = Math.round(S * 3.6) + 'px ui-monospace, Menlo, Consolas, monospace';
-    const isStalled = commandable && !busy && !h.dir;
+    const camped = commandable && !busy && !h.dir;
     const stallPulse = (uiFrame / 12 | 0) % 2 === 0;
-    ctx.globalAlpha = commandable ? (isStalled && stallPulse ? 1 : 0.8) : 0.3;
-    ctx.fillStyle = isStalled ? (stallPulse ? '#ffffff' : '#ffb040')
+    ctx.globalAlpha = commandable ? (h.overdue && stallPulse ? 1 : 0.8) : 0.3;
+    ctx.fillStyle = h.overdue ? (stallPulse ? '#ffffff' : '#ffb040')
       : busy ? '#ffffff' : '#7c8cb0';
+    /* A camped ghost shows its clock counting down to intervention -- or
+       just CAMPED, contentedly, when the limit is OFF. */
+    const campLeft = game.campLimit !== null
+      ? Math.max(0, Math.ceil((game.campLimit - h.campT) / 60)) : null;
     const status = !commandable ? 'DOWN'
       : h.boostT > 0 ? 'OVERDRIVE'
       : busy ? (h.path.closed ? 'PATROL' : 'ORDERED')
-      : h.dir ? 'DRIFTING' : 'STALLED';
+      : h.dir ? 'DRIFTING'
+      : h.overdue ? 'ORDERS!'
+      : campLeft !== null ? 'CAMP ' + campLeft : 'CAMPED';
     ctx.fillText(status, x + S * 12, y + h0 * 0.72);
   });
+
+  /* The camp-limit dial: a small chip above the roster. Click to cycle.
+     This is the player's own rule, so it lives in the player's layer. */
+  {
+    const chipW = S * 34, chipH = S * 6;
+    const cxp = x0, cyp = y - chipH - S * 1.2;
+    rosterUI.camp = { x: cxp, y: cyp, w: chipW, h: chipH };
+    ctx.save();
+    plate(ctx, cxp, cyp, chipW, chipH, S * 1.5);
+    ctx.fillStyle = 'rgba(8,12,28,0.85)';
+    ctx.fill();
+    ctx.strokeStyle = '#5878ff';
+    ctx.globalAlpha = 0.6;
+    ctx.lineWidth = Math.max(1, S * 0.3);
+    plate(ctx, cxp, cyp, chipW, chipH, S * 1.5);
+    ctx.stroke();
+    ctx.globalAlpha = 0.9;
+    ctx.font = Math.round(S * 3.4) + 'px ui-monospace, Menlo, Consolas, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#8fa0c0';
+    ctx.fillText('CAMP LIMIT', cxp + S * 2, cyp + chipH / 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold ' + Math.round(S * 3.8) + 'px ui-monospace, Menlo, Consolas, monospace';
+    ctx.fillText(CAMP_CHOICES[game.campChoice].label, cxp + S * 24, cyp + chipH / 2);
+    ctx.restore();
+  }
 
   /* PLAY: green and pulsing when the squad is ready; amber and inert while
      any ghost is stalled, because ghosts don't camp. */
@@ -3294,6 +3377,7 @@ function boot() {
   mazeLayerDim = renderMazeLayer(PAL.wallDim, PAL.doorDim);
   mazeLayerWhite = renderMazeLayer(PAL.white, PAL.white);
   try { game.high = parseInt(localStorage.getItem('ghostProtocolHigh') || '0', 10) || 0; } catch (e) {}
+  loadCampChoice();
 
   screenCanvas = document.getElementById('screen');
   native = makeCanvas(NATIVE_W, NATIVE_H);
