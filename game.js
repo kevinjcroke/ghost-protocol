@@ -2432,10 +2432,11 @@ function bindInput() {
         return;
       }
     }
-    /* Any click during live play stops the clock -- the mouse touching the
-       glass IS the freeze. A click that lands on a ghost also starts its
-       trail in the same gesture; a click on open floor just freezes, and
-       drawing begins with the next click. */
+    /* The click is the clock. During live play, any click freezes; while
+       frozen, a click on open floor resumes. Clicks that land on something
+       meaningful -- a ghost, an arrowhead, the roster, the camp chip, the
+       play button -- do that thing instead. A ghost grabbed mid-play still
+       freezes and starts its trail in one gesture. */
     const wasPlaying = game.phase === 'play';
     if (wasPlaying) pauseToCommand();
     const picked = Draw.pickAt(p.x, p.y);
@@ -2449,10 +2450,8 @@ function bindInput() {
         Draw.lastPicked = Draw.selected;
         return;
       }
-      // clicking open floor draws for whoever the roster has selected, so a
-      // buried ghost is still reachable
-      const sel = game.hunters[Draw.selected];
-      if (sel && sel.isCommandable()) Draw.begin(sel);
+      // nothing under the cursor: this click means "go"
+      resumeFromCommand();
     }
   });
   window.addEventListener('mousemove', (ev) => {

@@ -22,6 +22,7 @@ You cannot steer a ghost directly. You freeze time and **draw** where it walks.
 | --- | --- |
 | Click the attract screen | Start |
 | **Click anywhere during play** | Freeze time |
+| **Click empty maze while frozen** | Resume — the click is the clock |
 | **Grab a ghost mid-play** | Freezes *and* starts its trail in one gesture |
 | **SPACE** | Freeze / unfreeze from the keyboard |
 | **Drag from a ghost** | Hand-draw the path it will walk |
