@@ -1946,6 +1946,7 @@ const game = {
   message: null,        // {text, color, t}
   attract: { page: 0, t: 0, introStep: 0 },
   demo: false,
+  demoFright: false,
   hint: true,
   helpOpen: false,      // the pocket manual behind the ? chip
   captureInfo: null,
@@ -2243,30 +2244,71 @@ const game = {
     }
   },
 
-  /* attract-mode demo: keep hunters on rotating patrol circuits */
+  /* attract-mode demo: a squad that plays the game the way it's meant to be
+     played. The four triangulate on the evader -- one presses him directly,
+     the rest take cut-off points on his other sides, arrows visible on the
+     glass -- and the instant he takes an energizer they all wheel and run
+     for the far corners until the fright burns off. */
   demoDirector() {
-    if (this.tick % 240 !== 5) return;
-    const circuits = [
-      [{ c: 1, r: 1 }, { c: 12, r: 1 }, { c: 12, r: 7 }, { c: 1, r: 7 }],
-      [{ c: 15, r: 1 }, { c: 26, r: 1 }, { c: 26, r: 7 }, { c: 15, r: 7 }],
-      [{ c: 1, r: 17 }, { c: 12, r: 20 }, { c: 12, r: 29 }, { c: 1, r: 29 }],
-      [{ c: 15, r: 20 }, { c: 26, r: 23 }, { c: 26, r: 29 }, { c: 15, r: 29 }],
-    ];
-    this.hunters.forEach((h, i) => {
-      if (h.state !== 'active' || h.path) return;
-      const cs = circuits[i];
-      const t = h.tile();
-      let route = [];
-      let cur = { c: wrapCol(t.c), r: t.r };
-      // route to the circuit, then around it
-      for (let k = 0; k < cs.length + 1; k++) {
-        const target = cs[k % cs.length];
-        const leg = bfsRoute(cur, target);
-        if (!leg) return;
-        route = route.concat(k === 0 ? leg : leg.slice(1));
-        cur = target;
+    const fright = this.frightT > 0;
+    const flipped = fright !== this.demoFright;
+    this.demoFright = fright;
+    if (!flipped && this.tick % 120 !== 5) return;
+
+    const et = this.evader.tile();
+    const ev = { c: wrapCol(et.c), r: et.r };
+    const distEv = bfsDistFrom(ev);
+    const dAt = (c, r) => { const d = distEv[r * COLS + wrapCol(c)]; return d < 0 ? 999 : d; };
+    const squad = this.hunters.filter(h => h.state === 'active');
+    if (!squad.length) return;
+
+    // one candidate target per quadrant
+    const targets = [];
+    const best = [null, null, null, null];
+    for (let r = 0; r < MAZE_ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const d = distEv[r * COLS + c];
+        if (d < 0 || inDen(c, r)) continue;
+        if (fright) {
+          // farthest open tile from him in each board quadrant
+          const q = (c >= COLS / 2 ? 1 : 0) + (r >= MAZE_ROWS / 2 ? 2 : 0);
+          if (!best[q] || d > best[q].score) best[q] = { c, r, score: d };
+        } else {
+          // ring anchors: ~7 tiles out, one on each side of him
+          if (d < 5 || d > 10) continue;
+          const q = (c >= ev.c ? 1 : 0) + (r >= ev.r ? 2 : 0);
+          const score = -Math.abs(d - 7);
+          if (!best[q] || score > best[q].score) best[q] = { c, r, score };
+        }
       }
-      h.setOrder(route, false);
+    }
+    best.forEach(b => { if (b) targets.push({ c: b.c, r: b.r }); });
+
+    // nearest hunter presses him directly; the rest take the cut-offs
+    const claimed = new Set();
+    const byDist = squad.slice().sort((a, b) => {
+      const ta = a.tile(), tb = b.tile();
+      return dAt(ta.c, ta.r) - dAt(tb.c, tb.r);
+    });
+    byDist.forEach((h, k) => {
+      const t = h.tile();
+      const from = { c: wrapCol(t.c), r: t.r };
+      let goal = null;
+      if (!fright && k === 0) {
+        goal = ev;
+      } else {
+        let bi = -1, bd = 1e9;
+        targets.forEach((tg, i) => {
+          if (claimed.has(i)) return;
+          const d = Math.abs(tg.c - from.c) + Math.abs(tg.r - from.r);
+          if (d < bd) { bd = d; bi = i; }
+        });
+        if (bi >= 0) { claimed.add(bi); goal = targets[bi]; }
+        else if (!fright) goal = ev;
+      }
+      if (!goal) return;
+      const route = bfsRoute(from, goal);
+      if (route && route.length > 1) h.setOrder(route, false);
     });
   },
 };
@@ -2653,8 +2695,8 @@ function drawPlayfield(g) {
     g.drawImage(SPRITES.fruit[game.fruit.idx % SPRITES.fruit.length],
       DEN_EXIT_X - 8, tcy(FRUIT_TILE.r) - 8 + yOff);
   }
-  // faint trails during live play
-  if (game.phase === 'play') {
+  // faint trails during live play (and the self-playing demo)
+  if (game.phase === 'play' || (game.phase === 'attract' && game.demo)) {
     game.hunters.forEach((h) => {
       if (!h.path) return;
       const tiles = h.path.closed ? h.path.tiles : h.path.tiles.slice(Math.max(0, h.path.idx - 1));
@@ -2789,6 +2831,7 @@ function startDemo() {
   game.params = levelParams(3);
   game.resetActors();
   game.demo = true;
+  game.demoFright = false;
   game.phase = 'attract';
 }
 
@@ -2868,7 +2911,8 @@ function render() {
   /* The board is what the player is actually reading, so it wins: after the
      command layer is down, the pellets and the actors are punched back over
      the top of it. An order must never hide the food it is drawn across. */
-  if (game.phase === 'command' || game.phase === 'play') {
+  if (game.phase === 'command' || game.phase === 'play'
+      || (game.phase === 'attract' && game.demo)) {
     const ds = dotScratch.getContext('2d');
     ds.clearRect(0, 0, NATIVE_W, NATIVE_H);
     drawDots(ds, game.phase === 'command' ? PAL.dotDim : PAL.dot);
@@ -3098,7 +3142,12 @@ function drawHunterHi(ctx, ox, oy, h, idx) {
 }
 
 function drawOrderLayer(ctx, ox, oy) {
-  const showing = game.phase === 'command' || game.phase === 'play';
+  /* The attract demo also shows the orders -- the arrows converging on him
+     are the pitch -- but at live-play brightness only: frozen stays gated on
+     command, so the survey grid, the hi-res cast and the roster never leak
+     onto the attract screen. */
+  const demoLive = game.phase === 'attract' && game.demo;
+  const showing = game.phase === 'command' || game.phase === 'play' || demoLive;
   if (!showing) return;
   const S = scale;
   const frozen = game.phase === 'command';
