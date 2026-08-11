@@ -32,6 +32,7 @@ You cannot steer a ghost directly. You freeze time and **draw** where it walks.
 | Right-drag over a path | Erases from that point |
 | **1–4** / **Tab** or the roster buttons | Select a ghost (it floats to the top of any pile) |
 | Click a pile of ghosts repeatedly | Cycles through the ones stacked there |
+| **? chip (top right)** or **H** | The pocket manual — seven rules with figures, freezes play while open |
 | **M** | Mute |
 
 There is deliberately no "clear order" gesture: drawing a new order *is* the

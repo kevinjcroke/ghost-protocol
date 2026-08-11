@@ -1947,6 +1947,7 @@ const game = {
   attract: { page: 0, t: 0, introStep: 0 },
   demo: false,
   hint: true,
+  helpOpen: false,      // the pocket manual behind the ? chip
   captureInfo: null,
   flashT: 0,
   shakeT: 0,
@@ -2366,10 +2367,31 @@ function resumeFromCommand() {
   }
 }
 
+/* The manual. Opening it mid-play freezes time first -- reading the rules
+   should never cost you the round. Closing it never auto-resumes; the click
+   is still the clock. */
+function openHelp() {
+  if (game.phase === 'play') pauseToCommand();
+  game.helpOpen = true;
+  Sound.uiCommit();
+}
+function closeHelp() {
+  game.helpOpen = false;
+  Sound.uiCommit();
+}
+
 function bindInput() {
   window.addEventListener('keydown', (ev) => {
     if (ev.repeat) return;
     Sound.ensure(); Sound.resume();
+    if (game.helpOpen) {
+      // while the manual is up it owns the keyboard
+      if (ev.code === 'Escape' || ev.code === 'Space' || ev.code === 'KeyH') {
+        ev.preventDefault(); closeHelp();
+      }
+      return;
+    }
+    if (ev.code === 'KeyH') { openHelp(); return; }
     if (ev.code === 'Space' || ev.code === 'KeyP') {
       ev.preventDefault();
       if (game.phase === 'attract' || game.phase === 'gameover') { game.newGame(); return; }
@@ -2403,7 +2425,16 @@ function bindInput() {
   screenCanvas.addEventListener('mousedown', (ev) => {
     Sound.ensure(); Sound.resume();
     const p = toNative(ev);
+    const dp = toDisplay(ev);
     input.mx = p.x; input.my = p.y;
+    /* The manual sits above everything, including the attract screen. While
+       it is open no click reaches the game: the X or anywhere off the page
+       closes it, everything else is ignored. */
+    if (game.helpOpen) {
+      if (ev.button === 0 && (inRect(dp, helpUI.close) || !inRect(dp, helpUI.panel))) closeHelp();
+      return;
+    }
+    if (ev.button === 0 && inRect(dp, helpUI.btn)) { openHelp(); return; }
     if (game.phase === 'attract' || game.phase === 'gameover') { game.newGame(); return; }
     if (ev.button === 2) {
       input.rightDown = true;
@@ -2418,7 +2449,6 @@ function bindInput() {
     if (game.phase !== 'play' && game.phase !== 'command') return;
     // roster buttons live in display space, above the glass
     if (game.phase === 'command') {
-      const dp = toDisplay(ev);
       if (inRect(dp, rosterUI.play)) { resumeFromCommand(); return; }
       if (inRect(dp, rosterUI.camp)) { cycleCampChoice(); return; }
       const slot = rosterUI.slots.find(s => inRect(dp, s));
@@ -2860,6 +2890,8 @@ function render() {
       drawEvaderHi(sctx, sx, sy);   // the target sits on top of everything
     }
   }
+
+  drawHelpLayer(sctx);   // the ? chip and its manual float above everything
 }
 
 /* BEGIN COMMAND LAYER ----------------------------------------------------
@@ -3362,6 +3394,317 @@ function drawRoster(ctx, ox, oy) {
   ctx.closePath();
   ctx.fill();
   ctx.restore();
+
+  ctx.restore();
+}
+
+/* ------------------------------ the manual ------------------------------
+   The instructions kept growing until they stopped being read. Now the
+   glass carries one small ? chip in the corner, and this pocket manual
+   behind it: seven rules, each with a little drawn figure. Documentation
+   is for the player, so it renders in the player's layer. */
+const helpUI = { btn: null, close: null, panel: null };
+const HELP_FONT = 'px ui-monospace, Menlo, Consolas, monospace';
+
+function helpGhost(ctx, x, y, r, color, fright) {
+  // the roster ghost in miniature: dome, straight sides, three-flame hem
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(r / 7, r / 7);
+  ctx.beginPath();
+  ctx.moveTo(-7, 0);
+  ctx.arc(0, 0, 7, Math.PI, Math.PI * 2);
+  ctx.lineTo(7, 7);
+  for (let k = 1; k <= 5; k++) ctx.lineTo(7 - k * (14 / 6), k % 2 ? 4.9 : 7);
+  ctx.lineTo(-7, 7);
+  ctx.closePath();
+  ctx.fillStyle = fright ? PAL.fright : color;
+  ctx.fill();
+  if (fright) {
+    ctx.fillStyle = PAL.peach;
+    ctx.beginPath(); ctx.arc(-3, -1, 1.1, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(3, -1, 1.1, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = PAL.peach;
+    ctx.lineWidth = 0.9;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-6, 3.5);
+    for (let k = 0; k < 3; k++) {
+      ctx.lineTo(-6 + k * 4 + 2, 2.6);
+      ctx.lineTo(-6 + k * 4 + 4, 3.5);
+    }
+    ctx.stroke();
+  } else {
+    for (const ex of [-3, 3]) {
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.ellipse(ex, 0, 2, 2.4, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#202090';
+      ctx.beginPath(); ctx.arc(ex + 1, 0, 1.1, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function helpTrail(ctx, pts, w, color, arrow) {
+  // the drawn-order look in miniature: glow passes under a solid core
+  for (const [lw, a] of [[w * 4, 0.14], [w * 2, 0.3], [w, 0.95]]) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = a;
+    ctx.lineWidth = lw;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (arrow) {
+    const a = pts[pts.length - 2], b = pts[pts.length - 1];
+    const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    const len = w * 2.6;
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.translate(b.x, b.y); ctx.rotate(ang);
+    ctx.beginPath();
+    ctx.moveTo(len, 0);
+    ctx.lineTo(-len * 0.55, len * 0.7);
+    ctx.lineTo(-len * 0.2, 0);
+    ctx.lineTo(-len * 0.55, -len * 0.7);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function helpFigure(ctx, kind, cx, cy, S) {
+  // each figure lives in a box roughly 30S wide, 22S tall around (cx, cy)
+  ctx.save();
+  switch (kind) {
+    case 'click': {
+      // a cursor with pulse rings: the click that stops and starts time
+      const ph = (uiFrame * 0.03) % 1;
+      for (const k of [0, 0.5]) {
+        const t = (ph + k) % 1;
+        ctx.strokeStyle = '#9fb4ff';
+        ctx.globalAlpha = 0.7 * (1 - t);
+        ctx.lineWidth = Math.max(1, S * 0.4);
+        ctx.beginPath();
+        ctx.arc(cx - S * 3, cy - S * 1, S * (2.5 + t * 6), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      ctx.translate(cx - S * 3, cy - S * 1);
+      ctx.scale(S * 0.75, S * 0.75);
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#202040';
+      ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(0, 0); ctx.lineTo(0, 10); ctx.lineTo(2.6, 7.6);
+      ctx.lineTo(4.4, 11.2); ctx.lineTo(6.1, 10.3); ctx.lineTo(4.3, 6.9);
+      ctx.lineTo(7.3, 6.9);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      break;
+    }
+    case 'drag': {
+      helpTrail(ctx, [
+        { x: cx - S * 8, y: cy + S * 2 }, { x: cx - S * 1, y: cy + S * 2 },
+        { x: cx - S * 1, y: cy - S * 4 }, { x: cx + S * 9, y: cy - S * 4 },
+      ], S * 0.8, HUNTER_DEFS[0].color, true);
+      helpGhost(ctx, cx - S * 8, cy + S * 2, S * 3.4, HUNTER_DEFS[0].color, false);
+      break;
+    }
+    case 'beads': {
+      helpTrail(ctx, [{ x: cx - S * 11, y: cy }, { x: cx + S * 11, y: cy }],
+        S * 0.8, HUNTER_DEFS[2].color, false);
+      for (let k = -2; k <= 2; k++) {
+        const bx = cx + k * S * 4.5;
+        if (k === 0) {
+          const pulse = 0.6 + 0.4 * Math.sin(uiFrame * 0.18);
+          ctx.globalAlpha = 0.95;
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = Math.max(1, S * 0.32);
+          ctx.beginPath();
+          ctx.arc(bx, cy, S * (1.1 + 0.4 * pulse), 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = k === 0 ? 1 : 0.65;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath(); ctx.arc(bx, cy, S * 0.6, 0, Math.PI * 2); ctx.fill();
+      }
+      break;
+    }
+    case 'loop': {
+      const w = S * 8, h = S * 6;
+      helpTrail(ctx, [
+        { x: cx - w, y: cy - h }, { x: cx + w, y: cy - h }, { x: cx + w, y: cy + h },
+        { x: cx - w, y: cy + h }, { x: cx - w, y: cy - h },
+      ], S * 0.8, HUNTER_DEFS[3].color, false);
+      // the closed-circuit ring on the start tile
+      ctx.strokeStyle = HUNTER_DEFS[3].color;
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = Math.max(1, S * 0.35);
+      ctx.beginPath();
+      ctx.arc(cx - w, cy - h, S * 1.8 + Math.sin(uiFrame * 0.1) * S * 0.25, 0, Math.PI * 2);
+      ctx.stroke();
+      break;
+    }
+    case 'camp': {
+      // a wall, a dotted coast into it, and a ghost parked against it
+      ctx.fillStyle = '#3a48ff';
+      ctx.fillRect(cx + S * 7, cy - S * 8, S * 1.6, S * 16);
+      ctx.strokeStyle = HUNTER_DEFS[1].color;
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = Math.max(1, S * 0.6);
+      ctx.setLineDash([S * 1.2, S * 1.4]);
+      ctx.beginPath();
+      ctx.moveTo(cx - S * 11, cy + S * 1);
+      ctx.lineTo(cx + S * 2, cy + S * 1);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      helpGhost(ctx, cx + S * 3, cy + S * 1, S * 3.4, HUNTER_DEFS[1].color, false);
+      ctx.fillStyle = '#8fa0c0';
+      ctx.font = 'bold ' + Math.round(S * 3.4) + HELP_FONT;
+      ctx.textAlign = 'left';
+      ctx.fillText('Z', cx + S * 0.5, cy - S * 5);
+      ctx.font = 'bold ' + Math.round(S * 2.6) + HELP_FONT;
+      ctx.fillText('z', cx + S * 3.5, cy - S * 7);
+      break;
+    }
+    case 'fright': {
+      // the energizer, mid-blink, and what it does to a hunter
+      if ((uiFrame / 12 | 0) % 2 === 0) {
+        ctx.fillStyle = PAL.dot;
+        ctx.beginPath(); ctx.arc(cx - S * 8, cy, S * 2.2, 0, Math.PI * 2); ctx.fill();
+      }
+      helpGhost(ctx, cx + S * 5, cy, S * 3.4, null, true);
+      break;
+    }
+    case 'score': {
+      ctx.fillStyle = PAL.dot;
+      for (const k of [-1, 0, 1]) {
+        ctx.beginPath(); ctx.arc(cx - S * 7 + k * S * 3.6, cy, S * 0.9, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold ' + Math.round(S * 4.4) + HELP_FONT;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('x LVL', cx - S * 1, cy + S * 0.2);
+      break;
+    }
+  }
+  ctx.restore();
+}
+
+const HELP_ROWS = [
+  { fig: 'click',  a: 'CLICK ANYWHERE FREEZES TIME',       b: 'CLICK EMPTY MAZE TO RESUME' },
+  { fig: 'drag',   a: 'DRAG A GHOST TO DRAW ITS PATH',     b: 'IT WALKS EXACTLY WHAT YOU DREW' },
+  { fig: 'beads',  a: 'BEADS MARK EQUAL TRAVEL TIME',      b: 'WHITE BEADS = A SYNCED PINCER' },
+  { fig: 'loop',   a: 'CLOSE THE LOOP FOR AN ENDLESS PATROL', b: 'CLICK AN ARROWHEAD TO KEEP DRAWING' },
+  { fig: 'camp',   a: 'OFF THE END IT COASTS TO A WALL',   b: 'CAMP LIMIT SETS HOW LONG IT WAITS' },
+  { fig: 'fright', a: 'ENERGIZERS TURN YOUR SQUAD BLUE',   b: 'BLUE GHOSTS CAN BE EATEN' },
+  { fig: 'score',  a: 'SCORE = DOTS LEFT x LEVEL',         b: 'CATCH HIM FAST, BANK MORE' },
+];
+
+function drawHelpLayer(ctx) {
+  const S = scale;
+  const W = screenCanvas.width, H = screenCanvas.height;
+  ctx.save();
+  ctx.textBaseline = 'middle';
+
+  /* The ? chip: the one control that never leaves the glass. It breathes
+     on the attract screen and during the first untouched seconds of a
+     round, then settles down and stays out of the way. */
+  const r = S * 4.2;
+  const bcx = W - S * 7, bcy = S * 7;
+  helpUI.btn = { x: bcx - r - S, y: bcy - r - S, w: (r + S) * 2, h: (r + S) * 2 };
+  const attention = !game.helpOpen
+    && (game.phase === 'attract' || (game.hint && game.phase === 'play' && game.tick < 1200));
+  const pulse = attention ? 0.65 + 0.35 * Math.sin(uiFrame * 0.1) : 0.5;
+  ctx.beginPath(); ctx.arc(bcx, bcy, r, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(8,12,28,0.85)';
+  ctx.fill();
+  ctx.save();
+  ctx.shadowColor = '#5878ff';
+  ctx.shadowBlur = attention ? S * 3.5 * pulse : 0;
+  ctx.strokeStyle = '#5878ff';
+  ctx.globalAlpha = 0.4 + pulse * 0.6;
+  ctx.lineWidth = Math.max(1, S * 0.5);
+  ctx.beginPath(); ctx.arc(bcx, bcy, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+  ctx.fillStyle = game.helpOpen ? '#ffffff' : '#9fb4ff';
+  ctx.font = 'bold ' + Math.round(S * 5.4) + HELP_FONT;
+  ctx.textAlign = 'center';
+  ctx.fillText('?', bcx, bcy + S * 0.4);
+
+  if (!game.helpOpen) { ctx.restore(); return; }
+
+  // dim the whole machine: the manual is read, not played
+  ctx.fillStyle = 'rgba(0,0,8,0.78)';
+  ctx.fillRect(0, 0, W, H);
+
+  const px = S * 9, py = S * 12;
+  const pw = W - px * 2, ph = H - py * 2;
+  helpUI.panel = { x: px, y: py, w: pw, h: ph };
+  plate(ctx, px, py, pw, ph, S * 3);
+  ctx.fillStyle = 'rgba(10,14,32,0.96)';
+  ctx.fill();
+  ctx.strokeStyle = '#5878ff';
+  ctx.globalAlpha = 0.8;
+  ctx.lineWidth = Math.max(1, S * 0.5);
+  plate(ctx, px, py, pw, ph, S * 3);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold ' + Math.round(S * 6) + HELP_FONT;
+  ctx.textAlign = 'left';
+  ctx.fillText('HOW TO PLAY', px + S * 6, py + S * 7);
+
+  const cw = S * 7;
+  helpUI.close = { x: px + pw - cw - S * 3, y: py + S * 3.5, w: cw, h: cw };
+  const cc = helpUI.close;
+  ctx.strokeStyle = '#9fb4ff';
+  ctx.lineWidth = Math.max(1, S * 0.6);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cc.x + S * 1.8, cc.y + S * 1.8);
+  ctx.lineTo(cc.x + cw - S * 1.8, cc.y + cw - S * 1.8);
+  ctx.moveTo(cc.x + cw - S * 1.8, cc.y + S * 1.8);
+  ctx.lineTo(cc.x + S * 1.8, cc.y + cw - S * 1.8);
+  ctx.stroke();
+
+  const top = py + S * 13;
+  const rowH = (ph - S * 13 - S * 10) / HELP_ROWS.length;
+  HELP_ROWS.forEach((row, i) => {
+    const cy = top + rowH * i + rowH / 2;
+    if (i > 0) {
+      ctx.strokeStyle = '#5878ff';
+      ctx.globalAlpha = 0.18;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(px + S * 5, top + rowH * i);
+      ctx.lineTo(px + pw - S * 5, top + rowH * i);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    helpFigure(ctx, row.fig, px + S * 19, cy, S);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold ' + Math.round(S * 3.8) + HELP_FONT;
+    ctx.fillText(row.a, px + S * 37, cy - S * 2.6);
+    ctx.fillStyle = '#8fa0c0';
+    ctx.font = Math.round(S * 3.5) + HELP_FONT;
+    ctx.fillText(row.b, px + S * 37, cy + S * 2.8);
+  });
+
+  ctx.fillStyle = '#8fa0c0';
+  ctx.font = Math.round(S * 3.2) + HELP_FONT;
+  ctx.textAlign = 'center';
+  ctx.fillText('SPACE FREEZE   1-4 SELECT   RIGHT-DRAG ERASE   M MUTE',
+    px + pw / 2, py + ph - S * 5);
 
   ctx.restore();
 }

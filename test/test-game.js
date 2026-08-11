@@ -383,5 +383,23 @@ console.log('\n== evader competence: he should survive brainless hunters ==');
   ok('he survives hunters left parked and stupid', survived >= 3, { survived });
 }
 
+console.log('\n== the manual ==');
+{
+  const { openHelp, closeHelp, render } = API;
+  toPlay();
+  game.phase = 'play';
+  openHelp();
+  ok('opening the manual mid-play freezes time',
+     game.phase === 'command' && game.helpOpen === true, { phase: game.phase });
+  closeHelp();
+  ok('closing it never auto-resumes: the click is still the clock',
+     game.phase === 'command' && game.helpOpen === false, { phase: game.phase });
+  openHelp();
+  let threw = null;
+  try { render(); render(); } catch (e) { threw = e.message; }
+  ok('the open manual renders headlessly without throwing', threw === null, { threw });
+  closeHelp();
+}
+
 console.log('\n' + (fail === 0 ? 'ALL ' + pass + ' CHECKS PASSED' : pass + ' passed, ' + fail + ' FAILED'));
 process.exit(fail === 0 ? 0 : 1);
