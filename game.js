@@ -1567,6 +1567,7 @@ class Evader {
     this.dir = 'left';
     this.frame = 0; this.animT = 0;
     this.feintT = 0;
+    this.fleeGrid = null;
     this.decisionSeed = ((Date.now() * 7919) % 2147483645) + 1;
     this.alive = true;
   }
@@ -1582,9 +1583,15 @@ class Evader {
     const fright = game.frightT > 0;
     const t = this.tile();
     const inTunnel = TUNNEL_ROWS.includes(t.r) && (t.c <= 6 || t.c >= 21);
-    this.speed = fright ? game.params.evaderFrightSpeed
+    /* Adrenaline: with exactly one moving hunter on him he sprints -- a
+       lone chaser must never be enough, by arithmetic and not just hope.
+       The instant a second hunter is moving the edge is gone, which is the
+       whole design said as a speed table: pincers work, pursuit does not.
+       (fleeGrid is maintained by decide(): set iff one moving threat.) */
+    const adrenaline = this.fleeGrid ? 1.09 : 1;
+    this.speed = adrenaline * (fright ? game.params.evaderFrightSpeed
                : inTunnel ? game.params.evaderSpeed          // he owns the tunnels
-               : game.params.evaderSpeed * (1 + game.boldness() * 0.06);
+               : game.params.evaderSpeed * (1 + game.boldness() * 0.06));
     const moved = stepEntity(this, (e, ws) => this.decide(game, ws));
     if (moved && this.animT % 4 === 0) this.frame = (this.frame + 1) % 4;
 
@@ -1620,6 +1627,21 @@ class Evader {
     const danger = this.dangerAt(t.c, t.r, 0, game, myTicksPerTile) < 10;
     let cands = opts.filter(o => o.dir !== OPP[this.dir]);
     if (!cands.length || danger) cands = opts;
+    /* Against exactly one moving pursuer, pure flight is optimal: hold a
+       gradient away from it and no lone chaser can ever close. The margin
+       scoring only approximates this, capped and diluted by snack value,
+       which is why a relentless single hunter used to grind him down. */
+    this.fleeGrid = null;
+    let movingThreats = 0;
+    for (let i = 0; i < game.hunters.length; i++) {
+      const h = game.hunters[i];
+      if (!h.isThreat() || (!h.path && !h.dir)) continue;
+      const dg = game.hunterDistGrids[i];
+      const d = dg ? dg[t.r * COLS + wrapCol(t.c)] : -1;
+      if (d >= 0 && d < 22) { movingThreats++; this.fleeGrid = dg; }
+    }
+    if (movingThreats !== 1 || game.frightT > 0) this.fleeGrid = null;
+
     /* Never step onto a statue -- and that outranks the no-reverse rule.
        At the last tile of a sealed cul-de-sac the only forward option IS
        the statue, and refusing to reverse there meant walking into it. */
@@ -1663,15 +1685,30 @@ class Evader {
       const parked = !h.path && !h.dir;
       if (game.frightT > ticks * 1.0) continue;      // they're food right now
       if (parked) {
-        // a statue only matters if we would actually touch it
         const ht = h.tile();
         if (ht.c === c && ht.r === r) return 0;
+        /* A statue can wake: one order and it is a hunter again, and being
+           three tiles from a fresh hunter is how ambushes happened. Treat
+           it as a pursuer with a grace period -- close statues keep a
+           respectful margin, distant ones are still safely farmable. */
+        const dg = game.hunterDistGrids[i];
+        if (dg) {
+          const hd = dg[idx];
+          if (hd >= 0) {
+            const wakeTicks = hd * (TILE / game.params.hunterSpeed) + 45;
+            worst = Math.min(worst, Math.max(0, wakeTicks - ticks));
+          }
+        }
         continue;
       }
       const fut = game.hunterFutures[i];
       const tt = Math.min(HORIZON - 1, Math.round(ticks));
-      // occupied on/near our arrival tick? (only within his precognition horizon)
-      if (tt < game.params.horizon) {
+      /* Occupied on/near our arrival tick? The level-scaled horizon is how
+         deep he reads your DRAWN orders -- the mind-reading feel. But basic
+         reflexes are not a difficulty setting: half a second of "that
+         hunter is coming down this corridor" applies at every level, or a
+         lone chaser beats him at exactly the levels meant to be gentle. */
+      if (tt < Math.max(30, game.params.horizon)) {
         for (let w = -3; w <= 3; w++) {
           const k = tt + w;
           if (k >= 0 && k < fut.length && fut[k] === idx) {
@@ -1679,12 +1716,15 @@ class Evader {
           }
         }
       }
-      // static reachability margin as a fallback
+      // static reachability margin as a fallback. Always assume the hunter's
+      // healthy speed: planning around a frightened hunter's crawl is how the
+      // post-fright whiplash caught him -- fright ends, the crawl doesn't.
       const dg = game.hunterDistGrids[i];
       if (!dg) continue;
       const hd = dg[idx];
       if (hd >= 0) {
-        const hunterTicks = hd * (TILE / (h.speed || game.params.hunterSpeed));
+        const threatSpeed = Math.max(h.speed || 0, game.params.hunterSpeed);
+        const hunterTicks = hd * (TILE / threatSpeed);
         worst = Math.min(worst, Math.max(0, hunterTicks - ticks));
       }
     }
@@ -1715,6 +1755,11 @@ class Evader {
         const margin2 = minMargin + exits.length * 2;
         let score = Math.min(minMargin, 60) * 3 + exits.length * 5
           + snacks * 1.2 + fruitBonus * (minMargin > 20 ? 14 : 0);
+        // one pursuer: run the gradient away from it before anything else
+        if (this.fleeGrid && minMargin < 45 && c >= 0 && c < COLS) {
+          const fd = this.fleeGrid[r * COLS + wrapCol(c)];
+          if (fd >= 0) score += Math.min(fd, 26) * 2.2;
+        }
         /* When it is genuinely safe, head toward whatever food is left. The
            gate matters: chasing dots with a hunter three tiles away is how
            he used to walk himself into corners, and a lone chaser could farm
@@ -1805,8 +1850,9 @@ function levelParams(n) {
     respawnTicks: Math.max(420 - 20 * (n - 1), 180),
     lookahead: Math.min(1 + Math.floor((n - 1) / 2), 4),
     gamble: Math.min(0.12 + 0.05 * (n - 1), 0.55),
-    /* how many ticks of your committed orders he can read (precognition) */
-    horizon: n <= 1 ? 0 : n === 2 ? 40 : n === 3 ? 70 : HORIZON,
+    /* how many ticks of your committed orders he can read (precognition);
+       a 30-tick reflex floor applies at every level regardless */
+    horizon: n <= 1 ? 0 : n === 2 ? 55 : n === 3 ? 80 : HORIZON,
   };
 }
 
