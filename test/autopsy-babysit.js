@@ -30,6 +30,7 @@ for (let trial = 0; trial < TRIALS; trial++) {
       const et = ev.tile();
       if (h && et.c >= 0 && et.c < COLS) orderTo(h, { c: wrapCol(et.c), r: et.r });
     }
+    if (game.phase === 'command') game.phase = 'play';
     game.update(); t++;
     if (t % 10 === 0) {
       const et = ev.tile();

@@ -72,6 +72,7 @@ function playLevel(level, strategy, reissueEvery) {
   while (t < 240) { game.update(); t++; }        // READY
   while (t < MAX_TICKS) {
     if (t % reissueEvery === 0) strategy();
+    if (game.phase === 'command') game.phase = 'play';
     game.update(); t++;
     if (game.phase === 'capture' || game.phase === 'flash') {
       return { result: 'caught', ticks: t, score: game.score };

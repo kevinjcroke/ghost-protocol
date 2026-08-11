@@ -440,7 +440,10 @@ function renderHunterFrame(color, frame, dir, mode) {
         }
       }
     }
-    g.fillStyle = (mode === 'fright') ? PAL.peach : PAL.red;
+    /* The face keeps the hunter's own colour. The original made frightened
+       ghosts identical to blind the player chasing them; here the frightened
+       ones ARE the player's units, so identity has to survive the blue. */
+    g.fillStyle = color;
     FRIGHT_FACE.forEach(e => g.fillRect(ox + e.x, oy + e.y, e.w, e.h));
     FRIGHT_MOUTH.forEach(mx => {
       g.fillRect(ox + mx, oy + FRIGHT_MOUTH_Y + 1, 2, 1);
@@ -947,14 +950,14 @@ class Hunter {
       let { tiles, idx } = this.path;
       if (idx >= tiles.length) {
         if (this.path.closed) { idx = this.path.idx = 0; }
-        else { this.path = null; this.needsOrders = true; return; }  // ran off the end
+        else { this.path = null; return; }  // run off the end: coast on heading
       }
       let goal = tiles[idx];
       if (goal.c === t.c && goal.r === t.r) {
         this.path.idx++;
         if (this.path.idx >= tiles.length) {
           if (this.path.closed) this.path.idx = 0;
-          else { this.path = null; this.needsOrders = true; return; }
+          else { this.path = null; return; }
         }
         goal = tiles[this.path.idx];
       }
@@ -975,6 +978,9 @@ class Hunter {
       const d = DIRS[this.dir];
       if (!isOpen(t.c + d.x, t.r + d.y)) this.dir = null;
     }
+    /* Stopped dead with no order: ghosts don't camp. This flag freezes the
+       game and refuses to unfreeze until this ghost has somewhere to be. */
+    if (!this.dir && !this.path && this.state === 'active') this.needsOrders = true;
   }
 
   update(game) {
@@ -2287,10 +2293,23 @@ function pauseToCommand() {
     game.hint = false;
   }
 }
+/* A stalled ghost: active, no order, stopped dead. Ghosts don't camp, so
+   while one exists the game will not unfreeze. */
+function stalledHunter() {
+  return game.hunters.find(h => h.state === 'active' && !h.path && !h.dir) || null;
+}
 function resumeFromCommand() {
   if (game.phase === 'command') {
     if (Draw.active) Draw.commit(input.dragMoved);
     Draw.endErase();
+    const stalled = stalledHunter();
+    if (stalled) {
+      // refuse: point at the ghost that still needs somewhere to be
+      Draw.selected = game.hunters.indexOf(stalled);
+      Draw.lastPicked = Draw.selected;
+      Sound.uiClear();
+      return;
+    }
     game.phase = 'play';
     Sound.uiThaw();
     if (game.frightT <= 0) Sound.setSirenAudible(true);
@@ -2576,9 +2595,12 @@ function drawPlayfield(g) {
     }
     hunterDrawOrder().forEach(h => h.draw(g, game));
   } else if (game.phase !== 'flash') {
-    // in command the evader leaves the framebuffer; the command layer owns him
+    // in command the actors leave the framebuffer; the command layer owns
+    // them -- all except a dissolving hunter, which dies as pixels
     if (game.phase !== 'command') game.evader.draw(g, game);
-    hunterDrawOrder().forEach(h => h.draw(g, game));
+    hunterDrawOrder().forEach(h => {
+      if (game.phase !== 'command' || h.state === 'dissolving') h.draw(g, game);
+    });
   } else {
     hunterDrawOrder().forEach(h => h.draw(g, game));
   }
@@ -2597,7 +2619,13 @@ function drawPlayfield(g) {
   } else if (game.phase === 'gameover') {
     drawMessage(g, 'GAME  OVER', PAL.red);
   } else if (game.phase === 'command') {
-    if ((uiFrame / 20 | 0) % 2 === 0) drawMessage(g, 'COMMAND', PAL.cyan);
+    const stalled = stalledHunter();
+    if (stalled) {
+      // steady, not blinking: this is a demand, and it names the ghost
+      drawMessage(g, stalled.def.name + ' NEEDS ORDERS', PAL.white);
+    } else if ((uiFrame / 20 | 0) % 2 === 0) {
+      drawMessage(g, 'COMMAND', PAL.cyan);
+    }
   } else if (game.phase === 'play' && game.hint && game.tick < 1200
              && (uiFrame / 24 | 0) % 2 === 0) {
     drawMessage(g, 'GRAB A GHOST', PAL.peach);
@@ -2767,10 +2795,17 @@ function render() {
     }
     if (game.phase !== 'flash') {
       if (game.phase !== 'command') game.evader.draw(ds, game);
-      hunterDrawOrder().forEach(h => h.draw(ds, game));
+      hunterDrawOrder().forEach(h => {
+        if (game.phase !== 'command' || h.state === 'dissolving') h.draw(ds, game);
+      });
     }
     sctx.drawImage(dotScratch, sx, sy, NATIVE_W * scale, NATIVE_H * scale);
-    if (game.phase === 'command') drawEvaderHi(sctx, sx, sy);
+    if (game.phase === 'command') {
+      hunterDrawOrder().forEach((h, i) => {
+        if (h.state !== 'dissolving') drawHunterHi(sctx, sx, sy, h, i);
+      });
+      drawEvaderHi(sctx, sx, sy);   // the target sits on top of everything
+    }
   }
 }
 
@@ -2867,6 +2902,112 @@ function drawEvaderHi(ctx, ox, oy) {
   ctx.beginPath(); ctx.arc(-1 * S, -3.5 * S, 1.25 * S, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
   ctx.beginPath(); ctx.arc(-1.4 * S, -3.9 * S, 0.4 * S, 0, Math.PI * 2); ctx.fill();
+
+  ctx.restore();
+}
+
+/* The hunters get the same lift off the glass as their target: dome, skirt,
+   visor rebuilt as curves at display resolution, in whatever state time
+   froze them -- their own colour, overdrive white, fright blue with the
+   peach outline, or bare eyes walking home. Same 14px footprint, same
+   frozen skirt frame. A dissolving hunter never comes up here: it dies in
+   the framebuffer, as pixels. */
+function shadeMix(hex, k) {
+  // k > 0 mixes toward white, k < 0 toward black
+  const n = parseInt(hex.slice(1), 16);
+  const ch = [n >> 16 & 255, n >> 8 & 255, n & 255].map(v =>
+    Math.round(k >= 0 ? v + (255 - v) * k : v * (1 + k)));
+  return 'rgb(' + ch.join(',') + ')';
+}
+
+function drawHunterHi(ctx, ox, oy, h, idx) {
+  const S = scale;
+  const x = h.x * S + ox, y = (h.y + HUD_TOP * TILE) * S + oy;
+  const eyesOnly = h.state === 'eyes' || h.state === 'enteringDen';
+  const fright = game.frightT > 0 && !eyesOnly
+    && h.state !== 'idle' && h.state !== 'respawn'
+    && h.state !== 'exitingDen' && h.state !== 'exiting';
+  const frightFlash = fright && game.frightT < 120 && ((game.frightT / 12 | 0) % 2 === 0);
+  const boosted = !fright && !eyesOnly && h.boostT > 0 && (uiFrame / 4 | 0) % 2 === 0;
+  const body = fright ? (frightFlash ? PAL.frightW : PAL.fright)
+             : boosted ? PAL.white : h.color;
+  const breathe = 1 + 0.025 * Math.sin(uiFrame / 20 + idx * 1.7);
+
+  ctx.save();
+  ctx.translate(x, y);
+
+  if (!eyesOnly) {
+    const halo = ctx.createRadialGradient(0, 0, 3.5 * S, 0, 0, 14 * S);
+    halo.addColorStop(0, shadeMix(body === PAL.frightW ? PAL.fright : body, 0).replace('rgb', 'rgba').replace(')', ',0.26)'));
+    halo.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(0, 0, 14 * S, 0, Math.PI * 2); ctx.fill();
+  }
+
+  ctx.scale(S * breathe, S * breathe);   // native px units from here down
+  const p = PUPIL_OFF[h.dir] || PUPIL_OFF.left;
+
+  if (!eyesOnly) {
+    // silhouette: dome over straight sides over the three-flame hem,
+    // the hem phase frozen on whichever skirt frame time stopped
+    const ph = (h.frame ? 1 : -1) * 0.7;
+    ctx.beginPath();
+    ctx.moveTo(-7, 0);
+    ctx.arc(0, 0, 7, Math.PI, Math.PI * 2);
+    ctx.lineTo(7, 7);
+    const seg = 14 / 6;
+    for (let k = 1; k <= 5; k++) {
+      ctx.lineTo(Math.max(-6.6, Math.min(6.6, 7 - k * seg + ph)), k % 2 ? 4.9 : 7);
+    }
+    ctx.lineTo(-7, 7);
+    ctx.closePath();
+    const grad = ctx.createRadialGradient(-2.5, -3.2, 1, 0, 0, 9);
+    grad.addColorStop(0, shadeMix(body, 0.55));
+    grad.addColorStop(0.55, body);
+    grad.addColorStop(1, shadeMix(body, -0.3));
+    ctx.fillStyle = grad;
+    ctx.fill();
+    if (fright) {
+      // same reason as the sprite's outline: fright blue melts into the
+      // maze stroke without a peach rim
+      ctx.strokeStyle = frightFlash ? h.color : PAL.peach;
+      ctx.lineWidth = 0.7;
+      ctx.stroke();
+    }
+  }
+
+  if (fright) {
+    const face = h.color;   // identity lives in the face; see renderHunterFrame
+    ctx.fillStyle = face;
+    ctx.beginPath(); ctx.arc(-3, -1, 1.1, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(3, -1, 1.1, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = face;
+    ctx.lineWidth = 0.9;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-6, 3.5);
+    for (let k = 0; k < 3; k++) {
+      ctx.lineTo(-6 + k * 4 + 2, 2.6);
+      ctx.lineTo(-6 + k * 4 + 4, 3.5);
+    }
+    ctx.stroke();
+  } else {
+    // the scanning visor: oval whites, pupils shoved toward the heading
+    for (const exOff of [-3, 3]) {
+      ctx.fillStyle = PAL.eyeWhite;
+      ctx.beginPath();
+      ctx.ellipse(exOff, 0, 2, 2.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = PAL.pupil;
+      ctx.beginPath();
+      ctx.arc(exOff + (p.x - 1), (p.y - 1) * 1.1, 1.15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.beginPath();
+      ctx.arc(exOff + (p.x - 1) - 0.4, (p.y - 1) * 1.1 - 0.45, 0.32, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
 
   ctx.restore();
 }
@@ -3095,32 +3236,39 @@ function drawRoster(ctx, ox, oy) {
     ctx.fillText(h.def.name, x + S * 12, y + h0 * 0.34);
 
     ctx.font = Math.round(S * 3.6) + 'px ui-monospace, Menlo, Consolas, monospace';
-    ctx.globalAlpha = commandable ? 0.8 : 0.3;
-    ctx.fillStyle = busy ? '#ffffff' : '#7c8cb0';
+    const isStalled = commandable && !busy && !h.dir;
+    const stallPulse = (uiFrame / 12 | 0) % 2 === 0;
+    ctx.globalAlpha = commandable ? (isStalled && stallPulse ? 1 : 0.8) : 0.3;
+    ctx.fillStyle = isStalled ? (stallPulse ? '#ffffff' : '#ffb040')
+      : busy ? '#ffffff' : '#7c8cb0';
     const status = !commandable ? 'DOWN'
       : h.boostT > 0 ? 'OVERDRIVE'
-      : busy ? (h.path.closed ? 'PATROL' : 'ORDERED') : 'NO ORDER';
+      : busy ? (h.path.closed ? 'PATROL' : 'ORDERED')
+      : h.dir ? 'DRIFTING' : 'STALLED';
     ctx.fillText(status, x + S * 12, y + h0 * 0.72);
   });
 
-  // PLAY: a green pulse of a button, mouse-only resume
+  /* PLAY: green and pulsing when the squad is ready; amber and inert while
+     any ghost is stalled, because ghosts don't camp. */
   const px = x0 + 4 * (slotW + gap);
   rosterUI.play = { x: px, y, w: playW, h: h0 };
-  const pulse = 0.75 + 0.25 * Math.sin(uiFrame * 0.12);
+  const blocked = !!stalledHunter();
+  const btnColor = blocked ? '#c87820' : '#40ff88';
+  const pulse = blocked ? 0.45 : 0.75 + 0.25 * Math.sin(uiFrame * 0.12);
   ctx.save();
   plate(ctx, px, y, playW, h0, S * 2.5);
-  ctx.fillStyle = 'rgba(8,20,12,0.88)';
+  ctx.fillStyle = blocked ? 'rgba(24,14,4,0.88)' : 'rgba(8,20,12,0.88)';
   ctx.fill();
-  ctx.shadowColor = '#40ff88';
-  ctx.shadowBlur = S * 4 * pulse;
-  ctx.strokeStyle = '#40ff88';
+  ctx.shadowColor = btnColor;
+  ctx.shadowBlur = blocked ? 0 : S * 4 * pulse;
+  ctx.strokeStyle = btnColor;
   ctx.globalAlpha = pulse;
   ctx.lineWidth = Math.max(1, S * 0.6);
   plate(ctx, px, y, playW, h0, S * 2.5);
   ctx.stroke();
   ctx.shadowBlur = 0;
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = '#40ff88';
+  ctx.globalAlpha = blocked ? 0.55 : 1;
+  ctx.fillStyle = btnColor;
   const cx2 = px + playW / 2, cy2 = y + h0 / 2;
   ctx.beginPath();
   ctx.moveTo(cx2 - S * 2.2, cy2 - S * 3);

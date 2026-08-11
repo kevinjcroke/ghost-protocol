@@ -16,6 +16,7 @@ function measure(level, setup, ticks) {
   let hDist = 0, eDist = 0;
   let hp = { x: h.x, y: h.y }, ep = { x: ev.x, y: ev.y };
   for (let i = 0; i < ticks; i++) {
+    if (game.phase === 'command') game.phase = 'play';   // ghosts-don't-camp gate
     game.update();
     if (game.phase !== 'play') break;
     const hd = Math.abs(h.x - hp.x) + Math.abs(h.y - hp.y);

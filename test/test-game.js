@@ -12,6 +12,11 @@ function ok(name, cond, extra) {
 function tick(n) {
   const live = ['ready','play','capture','flash','escaped','gameover'];
   for (let i = 0; i < n; i++) {
+    // ghosts don't camp: the game halts for orders. Headless tests are not
+    // here to give orders, so force-resume at the top of each tick -- the
+    // flip happens BEFORE the update, so a freeze is still observable after
+    // the final tick of a loop.
+    if (game.phase === 'command') game.phase = 'play';
     if (live.includes(game.phase)) game.update();
     game.popups = game.popups.filter(p => --p.t > 0);
   }
@@ -201,11 +206,29 @@ console.log('\n== auto-freeze when a path runs out ==');
   h.setOrder([{ c: 1, r: 1 }, { c: 2, r: 1 }, { c: 3, r: 1 }], false);
   let n = 0;
   while (game.phase === 'play' && n++ < 900) tick(1);
-  ok('finishing a drawn path freezes the game for new orders',
+  ok('a ghost stalling at a wall freezes the game for new orders',
      game.phase === 'command', { phase: game.phase, n });
-  ok('and the finished ghost is pre-selected',
-     game.hunters[Draw.selected] === h, { selected: Draw.selected });
-  game.phase = 'play';
+  const sel = game.hunters[Draw.selected];
+  ok('and a stalled ghost is pre-selected',
+     sel && sel.state === 'active' && !sel.path && !sel.dir,
+     { selected: Draw.selected });
+  // the gate itself: resume must be refused until every stalled ghost
+  // has somewhere to be -- ghosts don't camp
+  API.resumeFromCommand();
+  ok('resume is refused while any ghost is stalled',
+     game.phase === 'command', { phase: game.phase });
+  while (API.stalledHunter()) {
+    const s = API.stalledHunter();
+    const st = s.tile();
+    const route = bfsRoute({ c: wrapCol(st.c), r: st.r }, { c: 6, r: 17 });
+    ok('a stalled ghost can be given an order', !!route && route.length > 1,
+       { at: st });
+    if (!route || route.length < 2) break;
+    s.setOrder(route, false);
+  }
+  API.resumeFromCommand();
+  ok('and once everyone has orders, resume works', game.phase === 'play',
+     { phase: game.phase });
 }
 
 console.log('\n== energizer role reversal ==');
@@ -304,7 +327,7 @@ console.log('\n== a long soak with no orders at all ==');
   // with nobody giving orders he clears board after board, so running out of
   // contracts and idling back to attract is the correct end state here
   ok('and the game is still in a sane phase',
-     ['play','ready','capture','flash','escaped','gameover','attract'].includes(game.phase),
+     ['play','ready','capture','flash','escaped','gameover','attract','command'].includes(game.phase),
      { ph: game.phase });
 }
 

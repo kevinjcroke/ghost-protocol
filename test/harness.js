@@ -46,6 +46,7 @@ const src = fs.readFileSync(require('path').join(__dirname, '..', 'game.js'), 'u
   + `\n;globalThis.__api = {
        game, Draw, tcx, tcy, COLS, MAZE_ROWS, TILE, DIRS, OPP,
        bfsRoute, neighborsOf, wrapCol, isOpen, tileOfPx,
+       resumeFromCommand, stalledHunter,
        get dots() { return dots; },
        get dotTotal() { return dotTotal; },
      };`;

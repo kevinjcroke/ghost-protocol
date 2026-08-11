@@ -33,10 +33,15 @@ You cannot steer a ghost directly. You freeze time and **draw** where it walks.
 | **M** | Mute |
 
 There is deliberately no "clear order" gesture: drawing a new order *is* the
-clear, so no click can ever silently disarm a ghost. And when any ghost walks
-off the end of its drawn path, the game freezes itself and hands you the pen
-with that ghost pre-selected — the wall rule still applies if you resume
-without drawing, but it never fires unseen.
+clear, so no click can ever silently disarm a ghost.
+
+**Ghosts don't camp.** A ghost that runs off the end of its path still coasts
+on its last heading — but the moment a wall stops it dead, the game freezes
+itself with that ghost pre-selected, and it will not unfreeze until every
+stalled ghost has somewhere to be. The roster says who's who: `ORDERED`,
+`PATROL`, `DRIFTING` (coasting, will stall at the next wall), `STALLED`
+(blocking the resume), `OVERDRIVE`, `DOWN`. The play button burns amber while
+anyone is stalled and goes green when the squad is ready.
 
 Ghosts pile onto the same tile constantly — three of them leave the den
 together — and a click can only land on one. So each keeps a permanent number
