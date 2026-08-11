@@ -10,6 +10,7 @@ function stubCtx() {
     fillStyle: '', strokeStyle: '', filter: '', globalAlpha: 1,
     globalCompositeOperation: '', imageSmoothingEnabled: false,
     createRadialGradient: () => ({ addColorStop: noop }),
+    measureText: () => ({ width: 0 }),
   }, {
     get(t, k) { return k in t ? t[k] : noop; },
     set(t, k, v) { t[k] = v; return true; },

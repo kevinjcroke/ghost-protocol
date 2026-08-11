@@ -2333,9 +2333,11 @@ let screenCanvas, screenCtx, native, nativeCtx, dotScratch, scale = 2;
 let scanlines = null, vignette = null;
 
 function toNative(ev) {
+  // rect-relative, because the canvas raster is device pixels while the
+  // rect is CSS pixels -- on a scaled Windows display they differ
   const rect = screenCanvas.getBoundingClientRect();
-  const x = (ev.clientX - rect.left) / scale;
-  const y = (ev.clientY - rect.top) / scale;
+  const x = (ev.clientX - rect.left) * (NATIVE_W / rect.width);
+  const y = (ev.clientY - rect.top) * (NATIVE_H / rect.height);
   return { x, y: y - HUD_TOP * TILE };
 }
 function toDisplay(ev) {
@@ -2553,10 +2555,19 @@ function bindInput() {
 /* ------------------------------ rendering ------------------------------- */
 
 function layout() {
+  /* Size the raster in device pixels, not CSS pixels. Windows display
+     scaling (devicePixelRatio 1.25/1.5) otherwise stretches the finished
+     canvas with nearest-neighbor resampling -- the board shrugs it off,
+     but every smooth glyph in the command layer gets its strokes eaten.
+     One native pixel maps to exactly `scale` device pixels; the CSS size
+     is set to compensate, so nothing on screen changes position. */
+  const dpr = window.devicePixelRatio || 1;
   scale = Math.max(1, Math.floor(Math.min(
-    window.innerWidth / NATIVE_W, window.innerHeight / NATIVE_H)));
+    window.innerWidth * dpr / NATIVE_W, window.innerHeight * dpr / NATIVE_H)));
   screenCanvas.width = NATIVE_W * scale;
   screenCanvas.height = NATIVE_H * scale;
+  screenCanvas.style.width = (NATIVE_W * scale / dpr) + 'px';
+  screenCanvas.style.height = (NATIVE_H * scale / dpr) + 'px';
   screenCtx = screenCanvas.getContext('2d');
   screenCtx.imageSmoothingEnabled = false;
   /* BEGIN CRT PASS -- everything below models the glass, not the board. It
@@ -3455,6 +3466,20 @@ function drawRoster(ctx, ox, oy) {
 const helpUI = { btn: null, close: null, panel: null };
 const HELP_FONT = 'px ui-monospace, Menlo, Consolas, monospace';
 
+/* Manual text gets a floor in real pixels -- at small window scales the
+   S-proportional sizes drop below legibility -- and shrinks back only as
+   far as needed to stay inside its column. */
+function helpText(ctx, text, x, y, px, maxW, weight, color) {
+  ctx.fillStyle = color;
+  let size = px;
+  ctx.font = weight + Math.round(size) + HELP_FONT;
+  while (size > 7 && maxW && ctx.measureText(text).width > maxW) {
+    size -= 0.5;
+    ctx.font = weight + Math.round(size) + HELP_FONT;
+  }
+  ctx.fillText(text, x, y);
+}
+
 function helpGhost(ctx, x, y, r, color, fright) {
   // the roster ghost in miniature: dome, straight sides, three-flame hem
   ctx.save();
@@ -3706,10 +3731,9 @@ function drawHelpLayer(ctx) {
   ctx.stroke();
   ctx.globalAlpha = 1;
 
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold ' + Math.round(S * 6) + HELP_FONT;
   ctx.textAlign = 'left';
-  ctx.fillText('HOW TO PLAY', px + S * 6, py + S * 7);
+  helpText(ctx, 'HOW TO PLAY', px + S * 6, py + S * 7,
+    Math.max(S * 6, 18), pw - S * 20, 'bold ', '#ffffff');
 
   const cw = S * 7;
   helpUI.close = { x: px + pw - cw - S * 3, y: py + S * 3.5, w: cw, h: cw };
@@ -3741,19 +3765,16 @@ function drawHelpLayer(ctx) {
     helpFigure(ctx, row.fig, px + S * 19, cy, S);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold ' + Math.round(S * 3.8) + HELP_FONT;
-    ctx.fillText(row.a, px + S * 37, cy - S * 2.6);
-    ctx.fillStyle = '#8fa0c0';
-    ctx.font = Math.round(S * 3.5) + HELP_FONT;
-    ctx.fillText(row.b, px + S * 37, cy + S * 2.8);
+    const textW = pw - S * 42;
+    helpText(ctx, row.a, px + S * 37, cy - S * 2.6,
+      Math.max(S * 3.8, 12), textW, 'bold ', '#ffffff');
+    helpText(ctx, row.b, px + S * 37, cy + S * 2.8,
+      Math.max(S * 3.5, 11), textW, '', '#8fa0c0');
   });
 
-  ctx.fillStyle = '#8fa0c0';
-  ctx.font = Math.round(S * 3.2) + HELP_FONT;
   ctx.textAlign = 'center';
-  ctx.fillText('SPACE FREEZE   1-4 SELECT   RIGHT-DRAG ERASE   M MUTE',
-    px + pw / 2, py + ph - S * 5);
+  helpText(ctx, 'SPACE FREEZE   1-4 SELECT   RIGHT-DRAG ERASE   M MUTE',
+    px + pw / 2, py + ph - S * 5, Math.max(S * 3.2, 10), pw - S * 8, '', '#8fa0c0');
 
   ctx.restore();
 }
