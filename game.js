@@ -914,7 +914,7 @@ class Hunter {
     this.frame = 0; this.animT = 0;
     this.respawnT = 0;
     this.needsOrders = false;
-    this.releaseT = 30 + this.slot * 60;    // brisk den release: all four out fast
+    this.releaseT = 10 + this.slot * 30;    // rapid-fire den release: seconds, not a queue
     this.dissolveT = -1;
   }
   tile() { return tileOfPx(this.x, this.y); }
@@ -989,8 +989,8 @@ class Hunter {
       return;
     }
     if (this.state === 'exitingDen') {
-      // slide to seam, rise through the door
-      const spd = 0.6;
+      // slide to seam, rise through the door -- at hunting speed, not a shuffle
+      const spd = 1.2;
       if (Math.abs(this.x - DEN_EXIT_X) > spd) {
         this.x += Math.sign(DEN_EXIT_X - this.x) * spd;
         this.dir = this.x < DEN_EXIT_X ? 'right' : 'left';
@@ -1016,7 +1016,7 @@ class Hunter {
       const hasOrder = !!this.path;
       const targetC = hasOrder ? DOOR_C0 : (this.exitHeading === 'left' ? 12 : 15);
       const targetX = tcx(targetC);
-      const spd = 0.6;
+      const spd = 1.2;
       this.dir = this.x < targetX ? 'right' : 'left';
       if (Math.abs(this.x - targetX) > spd) this.x += Math.sign(targetX - this.x) * spd;
       else {
