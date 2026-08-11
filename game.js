@@ -89,7 +89,7 @@ const MAZE_SRC = [
   '#.####................####.#',
   '#.####.#####.##.#####.####.#',
   '#.####.#####.##.#####.####.#',
-  '#......#####....#####......#',
+  '#..........................#',
   '#.####.######--######.####.#',
   '#.####.####      ####.####.#',
   ' ......####      ####...... ',
@@ -1017,7 +1017,9 @@ class Hunter {
       else {
         this.x = targetX;
         this.state = 'active';
-        this.dir = hasOrder ? null : 'up';   // null: the order decides
+        // with an order the trail decides; without one, drift off along the
+        // crossing so the parked statue ends up at the wall, not the door
+        this.dir = hasOrder ? null : this.exitHeading;
       }
       return;
     }
@@ -1618,10 +1620,17 @@ class Evader {
     const danger = this.dangerAt(t.c, t.r, 0, game, myTicksPerTile) < 10;
     let cands = opts.filter(o => o.dir !== OPP[this.dir]);
     if (!cands.length || danger) cands = opts;
-    // never step onto a statue: that tile is a wall that kills
-    const notParked = cands.filter(o =>
-      !(game.parkedTiles && game.parkedTiles.has(o.r * COLS + wrapCol(o.c))));
+    /* Never step onto a statue -- and that outranks the no-reverse rule.
+       At the last tile of a sealed cul-de-sac the only forward option IS
+       the statue, and refusing to reverse there meant walking into it. */
+    const isParked = (o) =>
+      game.parkedTiles && game.parkedTiles.has(o.r * COLS + wrapCol(o.c));
+    const notParked = cands.filter(o => !isParked(o));
     if (notParked.length) cands = notParked;
+    else {
+      const anySafe = opts.filter(o => !isParked(o));
+      if (anySafe.length) cands = anySafe;   // turn around rather than die
+    }
 
     let best = null, bestScore = -Infinity, second = null, secondScore = -Infinity;
     for (const o of cands) {
