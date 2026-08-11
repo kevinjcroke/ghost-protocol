@@ -2432,12 +2432,15 @@ function bindInput() {
         return;
       }
     }
+    /* Any click during live play stops the clock -- the mouse touching the
+       glass IS the freeze. A click that lands on a ghost also starts its
+       trail in the same gesture; a click on open floor just freezes, and
+       drawing begins with the next click. */
+    const wasPlaying = game.phase === 'play';
+    if (wasPlaying) pauseToCommand();
     const picked = Draw.pickAt(p.x, p.y);
-    // grabbing a ghost mid-play stops the clock by itself: that is the
-    // whole control scheme, and it has to be discoverable by grabbing one
-    if (picked && game.phase === 'play') pauseToCommand();
     if (picked && game.phase === 'command') Draw.begin(picked);
-    else if (!picked && game.phase === 'command') {
+    else if (!picked && game.phase === 'command' && !wasPlaying) {
       // an arrowhead is a handle: pick a committed route up at its tip and
       // keep drawing where it left off
       const tipOwner = Draw.tipAt(game, p.x, p.y);
