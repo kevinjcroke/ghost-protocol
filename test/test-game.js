@@ -166,7 +166,46 @@ console.log('\n== a failed drag must not wipe an existing order ==');
   ok('a drag that found no legal tile leaves the order alone', h.path !== null);
   Draw.begin(h);
   Draw.commit(false);               // a true click with no drag
-  ok('a click with no drag clears the order', h.path === null);
+  ok('a bare click never clears an order (there is no clear gesture)', h.path !== null);
+}
+
+console.log('\n== continue a route from its arrowhead ==');
+{
+  toPlay();
+  game.phase = 'command';
+  const h = game.hunters[0];
+  h.state = 'active'; h.x = tcx(1); h.y = tcy(1); h.dir = null; h.path = null;
+  Draw.begin(h);
+  Draw.extendToward(6, 1);
+  Draw.commit(true);
+  const firstLen = h.path.tiles.length;
+  // clicking the arrowhead picks the committed route back up
+  const tip = h.path.tiles[h.path.tiles.length - 1];
+  const owner = Draw.tipAt(game, tcx(tip.c), tcy(tip.r));
+  ok('the arrowhead is a live handle', owner === h);
+  ok('continuing resumes from the committed trail', Draw.continueFrom(h)
+     && Draw.active.tiles.length === firstLen);
+  Draw.extendToward(12, 1);
+  Draw.commit(true);
+  ok('the extension lands as one longer order', h.path.tiles.length > firstLen,
+     { before: firstLen, after: h.path.tiles.length });
+  h.path = null;
+}
+
+console.log('\n== auto-freeze when a path runs out ==');
+{
+  toPlay();
+  game.phase = 'play';
+  const h = game.hunters[1];
+  h.state = 'active'; h.x = tcx(1); h.y = tcy(1); h.dir = null;
+  h.setOrder([{ c: 1, r: 1 }, { c: 2, r: 1 }, { c: 3, r: 1 }], false);
+  let n = 0;
+  while (game.phase === 'play' && n++ < 900) tick(1);
+  ok('finishing a drawn path freezes the game for new orders',
+     game.phase === 'command', { phase: game.phase, n });
+  ok('and the finished ghost is pre-selected',
+     game.hunters[Draw.selected] === h, { selected: Draw.selected });
+  game.phase = 'play';
 }
 
 console.log('\n== energizer role reversal ==');
@@ -206,10 +245,13 @@ console.log('\n== capture, pincer scoring, level flow ==');
   h1.x = ev.x; h1.y = ev.y;
   h2.x = ev.x + 16; h2.y = ev.y;
   const before = game.score;
+  const dotsLeftNow = dotTotal() - game.dotsEaten;
   tick(3);
   ok('touching the evader ends the round', game.phase === 'capture');
-  ok('the capture scores', game.score > before, { gained: game.score - before });
-  ok('a second body nearby pays a pincer bonus', game.captureInfo.pincer > 0, game.captureInfo);
+  ok('the capture banks dots-left times level',
+     game.score - before === game.captureInfo.dotsLeft * game.level
+     && Math.abs(game.captureInfo.dotsLeft - dotsLeftNow) <= 3,
+     { gained: game.score - before, info: game.captureInfo });
   tick(90);
   ok('the board flashes', game.phase === 'flash');
   tick(150);
@@ -237,8 +279,8 @@ console.log('\n== the contested prize ==');
   h.state = 'active'; h.x = 112; h.y = tcy(17);
   const before = game.score;
   tick(2);
-  ok('a hunter routed over the prize claims it', game.fruit === null && game.score > before,
-     { gained: game.score - before });
+  ok('a hunter routed over the prize claims it, for zero points',
+     game.fruit === null && game.score === before, { gained: game.score - before });
   ok('and that hunter gets a burst of overdrive', h.boostT > 0, { boostT: h.boostT });
   const slow = game.params.hunterSpeed;
   h.dir = 'right'; h.update(game);

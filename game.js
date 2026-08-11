@@ -664,9 +664,13 @@ const SPRITES = { hunters: {}, gob: {}, fruit: [], dissolve: {}, minis: {} };
 function buildSprites() {
   HUNTER_DEFS.forEach(h => {
     const bank = { normal: {}, fright: [], frightFlash: [], eyes: {} };
+    bank.boost = {};
     DIR_NAMES.forEach(d => {
       bank.normal[d] = [renderHunterFrame(h.color, 0, d, 'normal'),
                         renderHunterFrame(h.color, 1, d, 'normal')];
+      // overdrive flash frame: same ghost, body burning white
+      bank.boost[d] = [renderHunterFrame(PAL.white, 0, d, 'normal'),
+                       renderHunterFrame(PAL.white, 1, d, 'normal')];
       bank.eyes[d] = renderHunterFrame(h.color, 0, d, 'eyes');
     });
     bank.fright = [renderHunterFrame(h.color, 0, 'left', 'fright'),
@@ -909,7 +913,8 @@ class Hunter {
     this.boostT = 0;            // prize overdrive ticks
     this.frame = 0; this.animT = 0;
     this.respawnT = 0;
-    this.releaseT = 60 + this.slot * 120;   // den release timing
+    this.needsOrders = false;
+    this.releaseT = 30 + this.slot * 60;    // brisk den release: all four out fast
     this.dissolveT = -1;
   }
   tile() { return tileOfPx(this.x, this.y); }
@@ -942,14 +947,14 @@ class Hunter {
       let { tiles, idx } = this.path;
       if (idx >= tiles.length) {
         if (this.path.closed) { idx = this.path.idx = 0; }
-        else { this.path = null; return; }  // run off the end: keep heading
+        else { this.path = null; this.needsOrders = true; return; }  // ran off the end
       }
       let goal = tiles[idx];
       if (goal.c === t.c && goal.r === t.r) {
         this.path.idx++;
         if (this.path.idx >= tiles.length) {
           if (this.path.closed) this.path.idx = 0;
-          else { this.path = null; return; }
+          else { this.path = null; this.needsOrders = true; return; }
         }
         goal = tiles[this.path.idx];
       }
@@ -1108,6 +1113,9 @@ class Hunter {
       const flashing = game.frightT < 120 && ((game.frightT / 12 | 0) % 2 === 0);
       const arr = flashing ? bank.frightFlash : bank.fright;
       g.drawImage(arr[this.frame], x, y);
+    } else if (this.boostT > 0 && (uiFrame / 4 | 0) % 2 === 0) {
+      // supercharged: rapid flash between its own colour and white-hot
+      g.drawImage(bank.boost[this.dir || 'left'][this.frame], x, y);
     } else {
       g.drawImage(bank.normal[this.dir || 'left'][this.frame], x, y);
     }
@@ -1224,6 +1232,31 @@ const Draw = {
     const anchor = this.anchorFor(hunter);
     this.active = { hunter, tiles: [anchor], closable: false };
   },
+
+  /* Pick up a committed route at its arrowhead and keep drawing. The trail
+     resumes from what the ghost has NOT yet walked, so committing the
+     extension keeps it seamlessly on course. */
+  continueFrom(hunter) {
+    const p = hunter.path;
+    if (!p || p.closed || !p.tiles.length) return false;
+    const remaining = p.tiles.slice(Math.max(0, p.idx - 1));
+    if (!remaining.length) return false;
+    this.active = { hunter, tiles: remaining.map(t => ({ c: t.c, r: t.r })), closable: false };
+    return true;
+  },
+
+  /* The committed open path whose tip sits under this point, if any. */
+  tipAt(game, px, py) {
+    let best = null;
+    for (const h of game.hunters) {
+      if (!h.path || h.path.closed || !h.path.tiles.length || !h.isCommandable()) continue;
+      const tip = h.path.tiles[h.path.tiles.length - 1];
+      const dx = tcx(tip.c) - px, dy = tcy(tip.r) - py;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 64 && (!best || d2 < best.d2)) best = { h, d2 };
+    }
+    return best ? best.h : null;
+  },
   /* start the trail at the tile the hunter will next be centered in */
   anchorFor(hunter) {
     // one still in the den will emerge at the door, so draw from there
@@ -1286,11 +1319,10 @@ const Draw = {
     this.active = null;
     if (!a) return;
     if (a.tiles.length < 2) {
-      // A real click with no drag clears the order. A drag that never found
-      // a legal tile (into a wall, say) must leave the old order alone --
-      // silently disarming a ghost the player never meant to touch is cruel
-      // in the wrong way.
-      if (!dragMoved) { a.hunter.clearOrder(); Sound.uiClear(); }
+      /* Nothing was drawn, so nothing changes. A bare click's whole job is
+         selecting (and cycling a pile); there is no clear gesture at all --
+         drawing a new order IS the clear. Destructive actions must never
+         share a gesture with browsing ones. */
       return;
     }
     let tiles = a.tiles;
@@ -1847,7 +1879,9 @@ function levelParams(n) {
     hunterFrightSpeed: 0.68 * base,
     eyeSpeed: 1.9 * base,
     frightTicks: Math.max(420 - 35 * (n - 1), 120),
-    respawnTicks: Math.max(420 - 20 * (n - 1), 180),
+    /* Five seconds. The game's promise is four-body coordination, and every
+       second a ghost sits in the den is a second the player commands three. */
+    respawnTicks: 300,
     lookahead: Math.min(1 + Math.floor((n - 1) / 2), 4),
     gamble: Math.min(0.12 + 0.05 * (n - 1), 0.55),
     /* how many ticks of your committed orders he can read (precognition);
@@ -1889,7 +1923,6 @@ const game = {
   captureInfo: null,
   flashT: 0,
   shakeT: 0,
-  pressureT: 0,
 
   boldness() { return Math.min(1, this.dotsEaten / Math.max(1, dotTotal)); },
 
@@ -1934,10 +1967,10 @@ const game = {
       this.high = this.score;
       try { localStorage.setItem('ghostProtocolHigh', String(this.high)); } catch (e) {}
     }
-    if (!this.extraAwarded && this.score >= 10000) {
+    if (!this.extraAwarded && this.score >= 5000) {
       this.extraAwarded = true;
       this.contracts++;
-      this.popup(NATIVE_W / 2, 130, 'EXTRA UNIT', PAL.white);
+      this.popup(NATIVE_W / 2, 130, 'EXTRA BOARD', PAL.white);
     }
   },
   popup(x, y, text, color) {
@@ -1950,19 +1983,16 @@ const game = {
     // frightened hunters do NOT reverse or flee by themselves: your problem
   },
 
-  /* The prize under the den is contested: route a hunter over it and that
-     hunter gets the points AND a burst of speed -- for a few seconds it can
-     actually run him down. He is always closer, so denying him is work, but
-     now the work buys a weapon rather than just subtracting his snack. */
+  /* The prize under the den is worth exactly one thing: overdrive. Route a
+     hunter over it first and that hunter can flat outrun him for eight
+     seconds. No points either way -- if he gets it, the window is simply
+     gone, and that missed chance is the whole cost. */
   takeFruit(byHunter) {
     if (!this.fruit) return;
-    const pts = FRUIT_POINTS[this.fruit.idx % FRUIT_POINTS.length];
     this.fruit = null;
     Sound.fruit();
     if (byHunter) {
-      this.addScore(pts);
       byHunter.boostT = 480;   // 8 seconds of overdrive
-      this.popup(DEN_EXIT_X, tcy(FRUIT_TILE.r), String(pts), PAL.cyan);
       this.popup(byHunter.x, byHunter.y - 10, byHunter.def.name + ' FAST', byHunter.color);
     } else {
       this.popup(DEN_EXIT_X, tcy(FRUIT_TILE.r), 'HE TOOK IT', PAL.magenta);
@@ -2046,12 +2076,16 @@ const game = {
     }
   },
 
+  /* One score, and it is a speed meter: the dots he never got, times the
+     level. Catch him fast and the board pays; let him graze first and it
+     doesn't. A pincer earns its banner and fanfare but no separate number,
+     because the system already pays for pincers the honest way -- they
+     catch him sooner, and sooner IS the score. */
   beginCapture(hunter) {
     this.phase = 'capture';
     this.phaseT = 0;
     Sound.stopSiren();
     Sound.capture();
-    // pincer scoring: every other hunter converging on the kill
     let bonusHunters = 0;
     const et = this.evader.tile();
     const dirsSeen = new Set();
@@ -2064,29 +2098,17 @@ const game = {
         dirsSeen.add(ht.c - et.c > 0 ? 'e' : ht.c - et.c < 0 ? 'w' : ht.r - et.r > 0 ? 's' : 'n');
       }
     }
-    const base = 1000 * this.level;
-    const pincer = Math.max(0, bonusHunters - 1) * 400 + Math.max(0, dirsSeen.size - 1) * 300;
-    this.captureInfo = { base, pincer, hunters: bonusHunters, dirs: dirsSeen.size };
-    this.addScore(base + pincer);
-    this.popup(this.evader.x, this.evader.y - 10, String(base + pincer), PAL.cyan);
-    if (pincer > 0) this.popup(this.evader.x, this.evader.y - 20, 'PINCER', PAL.white);
+    const dotsLeft = Math.max(0, dotTotal - this.dotsEaten);
+    const banked = dotsLeft * this.level;
+    this.captureInfo = { banked, dotsLeft, hunters: bonusHunters, dirs: dirsSeen.size };
+    this.addScore(banked);
+    this.popup(this.evader.x, this.evader.y - 10, String(banked), PAL.cyan);
+    if (bonusHunters >= 2 && dirsSeen.size >= 2) {
+      this.popup(this.evader.x, this.evader.y - 20, 'PINCER', PAL.white);
+    }
     this.evader.alive = true;   // shown spinning during capture phase
   },
 
-  pressureScore() {
-    if (++this.pressureT < 30) return;
-    this.pressureT = 0;
-    const et = this.evader.tile();
-    let near = 0;
-    for (let i = 0; i < this.hunters.length; i++) {
-      const h = this.hunters[i];
-      if (!h.isThreat() || (!h.path && !h.dir)) continue;   // parked earns nothing
-      const dg = this.hunterDistGrids[i];
-      const d = dg ? dg[et.r * COLS + wrapCol(et.c)] : -1;
-      if (d >= 0 && d <= 6) near++;
-    }
-    if (near >= 2) this.addScore(near * 10);
-  },
 
   /* one 60 Hz game tick (only in live phases) */
   update() {
@@ -2160,8 +2182,28 @@ const game = {
         }
       }
     }
-    this.pressureScore();
+
     Sound.tickSiren(this.sirenStage());
+
+    /* A ghost just walked off the end of its drawn path: freeze and hand
+       the player the pen instead of letting it coast into a wall and go
+       stupid unnoticed. The wall rule is unchanged -- resuming without new
+       orders still parks it -- the game just always asks first. */
+    if (!this.demo) {
+      for (let i = 0; i < this.hunters.length; i++) {
+        const h = this.hunters[i];
+        if (!h.needsOrders) continue;
+        h.needsOrders = false;
+        if (h.state === 'active' && this.phase === 'play') {
+          Draw.selected = i;
+          Draw.lastPicked = i;
+          this.popup(h.x, h.y - 10, h.def.name + ': ORDERS?', h.color);
+          pauseToCommand();
+        }
+      }
+    } else {
+      this.hunters.forEach(h => { h.needsOrders = false; });
+    }
 
     if (this.dotsEaten >= dotTotal) {
       // he cleared the board: we lose a contract
@@ -2326,6 +2368,14 @@ function bindInput() {
     if (picked && game.phase === 'play') pauseToCommand();
     if (picked && game.phase === 'command') Draw.begin(picked);
     else if (!picked && game.phase === 'command') {
+      // an arrowhead is a handle: pick a committed route up at its tip and
+      // keep drawing where it left off
+      const tipOwner = Draw.tipAt(game, p.x, p.y);
+      if (tipOwner && Draw.continueFrom(tipOwner)) {
+        Draw.selected = game.hunters.indexOf(tipOwner);
+        Draw.lastPicked = Draw.selected;
+        return;
+      }
       // clicking open floor draws for whoever the roster has selected, so a
       // buried ghost is still reachable
       const sel = game.hunters[Draw.selected];
@@ -2526,7 +2576,8 @@ function drawPlayfield(g) {
     }
     hunterDrawOrder().forEach(h => h.draw(g, game));
   } else if (game.phase !== 'flash') {
-    game.evader.draw(g, game);
+    // in command the evader leaves the framebuffer; the command layer owns him
+    if (game.phase !== 'command') game.evader.draw(g, game);
     hunterDrawOrder().forEach(h => h.draw(g, game));
   } else {
     hunterDrawOrder().forEach(h => h.draw(g, game));
@@ -2715,10 +2766,11 @@ function render() {
         DEN_EXIT_X - 8, tcy(FRUIT_TILE.r) - 8 + HUD_TOP * TILE);
     }
     if (game.phase !== 'flash') {
-      game.evader.draw(ds, game);
+      if (game.phase !== 'command') game.evader.draw(ds, game);
       hunterDrawOrder().forEach(h => h.draw(ds, game));
     }
     sctx.drawImage(dotScratch, sx, sy, NATIVE_W * scale, NATIVE_H * scale);
+    if (game.phase === 'command') drawEvaderHi(sctx, sx, sy);
   }
 }
 
@@ -2763,6 +2815,59 @@ function strokeRuns(ctx, runs, width, color, alpha, dashOffset) {
     for (let i = 1; i < run.length; i++) ctx.lineTo(run[i].x, run[i].y);
     ctx.stroke();
   }
+  ctx.restore();
+}
+
+/* Frozen time lifts the target off the glass. While you plan, the evader is
+   the one actor rendered the way the command layer renders everything --
+   display-resolution curves, gradients, glow -- the same character, same
+   footprint, same frozen mouth frame, just no longer made of tiles. The
+   instant PLAY unfreezes him he drops back into the framebuffer. */
+function drawEvaderHi(ctx, ox, oy) {
+  const e = game.evader;
+  if (!e || !e.alive) return;
+  const S = scale;
+  const x = e.x * S + ox, y = (e.y + HUD_TOP * TILE) * S + oy;
+  const r = 7 * S;   // the sprite's 14px footprint, honestly kept
+  // the chomp is frozen mid-bite exactly where time stopped
+  const gape = [0.10, Math.PI / 8, Math.PI / 4][[0, 1, 2, 1][e.frame % 4]];
+  const breathe = 1 + 0.025 * Math.sin(uiFrame / 20);
+
+  ctx.save();
+  ctx.translate(x, y);
+
+  // a quiet halo so he reads as "held", like the head of a drawn order
+  const halo = ctx.createRadialGradient(0, 0, r * 0.5, 0, 0, r * 2.1);
+  halo.addColorStop(0, 'rgba(255,240,33,0.30)');
+  halo.addColorStop(1, 'rgba(255,240,33,0)');
+  ctx.fillStyle = halo;
+  ctx.beginPath(); ctx.arc(0, 0, r * 2.1, 0, Math.PI * 2); ctx.fill();
+
+  // orient exactly like the sprite renderer: art faces right
+  if (e.dir === 'left') ctx.scale(-1, 1);
+  else if (e.dir === 'up') ctx.rotate(-Math.PI / 2);
+  else if (e.dir === 'down') ctx.rotate(Math.PI / 2);
+  ctx.scale(breathe, breathe);
+
+  // body: the same yellow disc, with the curve the tile grid could never hold
+  const body = ctx.createRadialGradient(-r * 0.35, -r * 0.4, r * 0.15, 0, 0, r * 1.12);
+  body.addColorStop(0, '#FFFAB0');
+  body.addColorStop(0.55, '#FFF021');
+  body.addColorStop(1, '#C8A400');
+  ctx.fillStyle = body;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, r, gape, Math.PI * 2 - gape);
+  ctx.closePath();
+  ctx.fill();
+
+  // the eye: same mark, same place as the sprite's two black pixels,
+  // plus the one glint only display resolution can afford
+  ctx.fillStyle = '#181818';
+  ctx.beginPath(); ctx.arc(-1 * S, -3.5 * S, 1.25 * S, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.beginPath(); ctx.arc(-1.4 * S, -3.9 * S, 0.4 * S, 0, Math.PI * 2); ctx.fill();
+
   ctx.restore();
 }
 

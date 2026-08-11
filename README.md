@@ -26,11 +26,17 @@ You cannot steer a ghost directly. You freeze time and **draw** where it walks.
 | **Drag from a ghost** | Hand-draw the path it will walk |
 | Drag back along the line | Retracts it, like an undo |
 | Return the tip to the start tile, release | Closes it into a **patrol loop** the ghost walks forever |
-| Click a ghost, release without dragging | Clears its order |
+| Click a route's arrowhead | Picks the line back up and continues drawing it |
 | Right-drag over a path | Erases from that point |
-| **1–4** / **Tab** | Select a ghost by name from the roster |
+| **1–4** / **Tab** or the roster buttons | Select a ghost (it floats to the top of any pile) |
 | Click a pile of ghosts repeatedly | Cycles through the ones stacked there |
 | **M** | Mute |
+
+There is deliberately no "clear order" gesture: drawing a new order *is* the
+clear, so no click can ever silently disarm a ghost. And when any ghost walks
+off the end of its drawn path, the game freezes itself and hands you the pen
+with that ghost pre-selected — the wall rule still applies if you resume
+without drawing, but it never fires unseen.
 
 Ghosts pile onto the same tile constantly — three of them leave the den
 together — and a click can only land on one. So each keeps a permanent number
@@ -40,10 +46,10 @@ that ghost (it floats to the front of whatever pile it's standing in), press
 its number, or click the green **▶** to unfreeze — the whole game is playable
 without touching the keyboard.
 
-The prize that appears under the den is worth fighting for on both sides. He
-wants it for the points you're denied; a hunter routed over it first banks the
-points **and runs on overdrive for eight seconds** — the one window where a
-ghost can flat outrun him.
+The prize that appears under the den is worth exactly one thing: **overdrive**.
+A hunter routed over it first flashes white-hot and can flat outrun him for
+eight seconds — the only window where pursuit beats flight. No points either
+way; if he reaches it first, the weapon is simply gone.
 
 The drawn line is not a route the computer picked for you. It follows your
 cursor tile by tile through the corridors, orthogonally, refusing walls. Drag
@@ -80,9 +86,13 @@ no "return to patrol" you didn't draw.
 
 Four ghosts, one mouse, one brain. The game is the coordination.
 
-Command one ghost at a time and you will lose. The scoring knows the
-difference: you're paid for proximity pressure and for closing multiple bodies
-onto one point from multiple directions, not just for the kill.
+Command one ghost at a time and you will lose. The score knows: there is one
+number, and it is a speed meter — **the dots he never got, times the level**,
+banked at the moment of capture. Catch him fast and the board pays; let him
+graze first and it doesn't. A multi-directional pincer earns its banner and
+fanfare, and its real reward is built in: pincers catch him sooner, and
+sooner *is* the score. The rising siren and the falling payout are the same
+clock.
 
 Your ghosts are *not* slower than him in any meaningful way — they run at
 near parity. Their handicap is that they cannot improvise. He re-decides at
