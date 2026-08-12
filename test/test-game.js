@@ -112,6 +112,16 @@ console.log('\n== stacked ghosts stay reachable ==');
      new Set(picks.slice(0, 4)).size === 4, { picks });
   ok('and the cycle wraps back round', picks[4] === picks[0], { picks });
 
+  // a roster-button pick is sticky: the first click on the pile keeps the
+  // chosen ghost instead of toggling past it; the click after that cycles
+  Draw.select(1);
+  const kept = Draw.pickAt(tcx(6), tcy(8));
+  ok('a button-selected ghost survives the first click on its pile',
+     kept === H[1], { kept: kept && kept.key });
+  const after = Draw.pickAt(tcx(6), tcy(8));
+  ok('and the next click resumes the toggle',
+     after !== H[1], { after: after && after.key });
+
   Draw.selected = 2;                     // as a number key would
   Draw.begin(H[Draw.selected]);
   ok('a ghost selected by number is the one that gets drawn for',

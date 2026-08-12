@@ -1265,6 +1265,16 @@ const Draw = {
   erase: null,      // { hunter } during right-drag erase
   selected: 0,      // roster slot the number keys point at
   lastPicked: -1,   // for cycling through a stack of ghosts on one tile
+  sticky: false,    // selection came from a button/key, not a click on the pile
+
+  /* Selection made out-of-band -- roster button, number key, Tab, the game
+     itself. Sticky: the next click on a pile holding this ghost grabs it
+     rather than cycling past it. You already said which ghost you meant. */
+  select(i) {
+    this.selected = i;
+    this.lastPicked = i;
+    this.sticky = true;
+  },
 
   /* Ghosts pile up -- three of them leave the den on the same tile, and a
      click can only ever land on one. So clicking a stack cycles through it,
@@ -1285,8 +1295,11 @@ const Draw = {
     let choice = pool[0];
     if (pool.length > 1) {
       const at = pool.findIndex(n => n.i === this.lastPicked);
-      choice = pool[(at + 1) % pool.length];
+      // a sticky selection means this click, if that ghost is here, takes it
+      if (this.sticky && at >= 0) choice = pool[at];
+      else choice = pool[(at + 1) % pool.length];
     }
+    this.sticky = false;
     this.lastPicked = choice.i;
     this.selected = choice.i;
     return choice.h;
@@ -2289,8 +2302,7 @@ const game = {
         if (!h.needsOrders) continue;
         h.needsOrders = false;
         if (h.state === 'active' && this.phase === 'play') {
-          Draw.selected = i;
-          Draw.lastPicked = i;
+          Draw.select(i);
           this.popup(h.x, h.y - 10, h.def.name + ': ORDERS?', h.color);
           pauseToCommand();
         }
@@ -2465,8 +2477,7 @@ function resumeFromCommand() {
     const stalled = stalledHunter();
     if (stalled) {
       // refuse: point at the ghost that still needs somewhere to be
-      Draw.selected = game.hunters.indexOf(stalled);
-      Draw.lastPicked = Draw.selected;
+      Draw.select(game.hunters.indexOf(stalled));
       Sound.uiClear();
       return;
     }
@@ -2513,8 +2524,7 @@ function bindInput() {
       const i = Number(ev.code.slice(5)) - 1;
       if (game.hunters[i] && game.hunters[i].isCommandable()) {
         if (game.phase === 'play') pauseToCommand();
-        Draw.selected = i;
-        Draw.lastPicked = i;
+        Draw.select(i);
       }
     } else if (ev.code === 'Tab') {
       ev.preventDefault();
@@ -2522,7 +2532,7 @@ function bindInput() {
         if (game.phase === 'play') pauseToCommand();
         for (let n = 1; n <= 4; n++) {
           const i = (Draw.selected + n) % game.hunters.length;
-          if (game.hunters[i].isCommandable()) { Draw.selected = i; Draw.lastPicked = i; break; }
+          if (game.hunters[i].isCommandable()) { Draw.select(i); break; }
         }
       }
     } else if (ev.code === 'KeyM') {
@@ -2564,8 +2574,7 @@ function bindInput() {
       if (slot) {
         const h = game.hunters[slot.i];
         if (h && h.isCommandable()) {
-          Draw.selected = slot.i;
-          Draw.lastPicked = slot.i;   // floats it to the front of any pile
+          Draw.select(slot.i);   // floats it to the front of any pile
           Sound.uiCommit();
         }
         return;
@@ -2585,8 +2594,7 @@ function bindInput() {
       // keep drawing where it left off
       const tipOwner = Draw.tipAt(game, p.x, p.y);
       if (tipOwner && Draw.continueFrom(tipOwner)) {
-        Draw.selected = game.hunters.indexOf(tipOwner);
-        Draw.lastPicked = Draw.selected;
+        Draw.select(game.hunters.indexOf(tipOwner));
         return;
       }
       // nothing under the cursor: this click means "go"
