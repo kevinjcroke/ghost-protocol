@@ -443,6 +443,32 @@ console.log('\n== evader competence: he should survive brainless hunters ==');
   ok('he survives hunters left parked and stupid', survived >= 3, { survived });
 }
 
+console.log('\n== the attract demo is a silent movie ==');
+{
+  /* Field report: the demo is normally silent, but clicking the ? chip made
+     it start narrating itself. It was only ever silent by luck -- nothing
+     had created the AudioContext yet -- and the first click unlocked audio
+     for a demo that was emitting real chomps and a real siren all along. */
+  const { Sound } = API;
+  const wasMuted = Sound.muted;
+  Sound.muted = false;
+  game.demo = true;
+  ok('demo board audio is gated off', Sound.quiet() === true);
+  ok('but UI feedback still answers the player', (() => {
+    let heard = false;
+    const realBlip = Sound.blip;
+    Sound.blip = function () { heard = !this.quiet(); };
+    Sound.uiCommit();
+    Sound.blip = realBlip;
+    return heard;
+  })());
+  game.demo = false;
+  ok('and normal play is audible again', Sound.quiet() === false);
+  Sound.muted = true;
+  ok('mute still wins over everything', Sound.quiet() === true);
+  Sound.muted = wasMuted;
+}
+
 console.log('\n== the manual ==');
 {
   const { openHelp, closeHelp, render } = API;

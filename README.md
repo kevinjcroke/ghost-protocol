@@ -207,9 +207,11 @@ node test/test-game.js && node test/validate-maze.js && node test/no-infinite-la
   smoothing, or any sprite blitted at a scale other than 1:1. Resampling
   invents colors that were never in the palette.
 - **speed-audit.js** / **difficulty-curve.js** — measure what the tuning
-  tables actually produce: tiles covered per second by each side, and win
-  rates for a coordinating player versus a one-ghost-at-a-time player across
-  levels 1–20.
+  tables actually produce: tiles covered per second by each side, and — since
+  a board is now three catches with three chances, making win rate a soft
+  ruler — the *cleanliness* of each catch (dots still on the board when he
+  was caught, the level-normalized half of the score) for a coordinating
+  player versus a one-ghost-at-a-time player across levels 1–20.
 
 ## Credits
 

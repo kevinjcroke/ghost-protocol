@@ -701,6 +701,25 @@ const Sound = {
   ctx: null, master: null, muted: false,
   siren: null, sirenGain: null, sirenNext: 0, sirenLevel: 0, sirenOn: false,
   chompFlip: false,
+  forceAudible: false,
+
+  /* The attract demo is a silent movie. It runs the real game loop, so it
+     emits real chomps and a real siren -- inaudible only because nothing
+     has created the AudioContext yet. The moment the player touches any
+     control (which is what unlocks audio), the demo starts narrating
+     itself over the attract screen. So the board is gated on the demo
+     flag, not on luck. UI feedback answers the player directly and plays
+     regardless. */
+  quiet() {
+    return this.muted
+      || (!this.forceAudible && typeof game !== 'undefined' && game.demo);
+  },
+  uiBlip(f0, f1, dur, type, vol) {
+    const was = this.forceAudible;
+    this.forceAudible = true;
+    this.blip(f0, f1, dur, type, vol);
+    this.forceAudible = was;
+  },
 
   ensure() {
     if (this.ctx) return true;
@@ -717,7 +736,7 @@ const Sound = {
   resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); },
 
   blip(freq0, freq1, dur, type, vol, when) {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.quiet()) return;
     const t = (when || this.ctx.currentTime);
     const o = this.ctx.createOscillator();
     const g = this.ctx.createGain();
@@ -731,7 +750,7 @@ const Sound = {
   },
 
   noiseBurst(dur, vol, when) {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.quiet()) return;
     const t = when || this.ctx.currentTime;
     const len = Math.floor(this.ctx.sampleRate * dur);
     const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -752,7 +771,7 @@ const Sound = {
     this.siren = this.ctx.createOscillator();
     this.sirenGain = this.ctx.createGain();
     this.siren.type = 'square';
-    this.sirenGain.gain.value = this.muted ? 0 : 0.035;
+    this.sirenGain.gain.value = this.quiet() ? 0 : 0.035;
     this.siren.connect(this.sirenGain); this.sirenGain.connect(this.master);
     this.siren.start();
     this.sirenNext = this.ctx.currentTime;
@@ -777,7 +796,7 @@ const Sound = {
     this.sirenNext = s + cyc;
   },
   setSirenAudible(on) {
-    if (this.sirenGain) this.sirenGain.gain.value = (on && !this.muted) ? 0.035 : 0;
+    if (this.sirenGain) this.sirenGain.gain.value = (on && !this.quiet()) ? 0.035 : 0;
   },
 
   chomp() {
@@ -790,7 +809,7 @@ const Sound = {
   frightPulse(step) { this.blip(step % 2 ? 210 : 260, step % 2 ? 150 : 200, 0.09, 'sawtooth', 0.05); },
   eyesPulse(step) { this.blip(step % 2 ? 750 : 950, step % 2 ? 950 : 750, 0.06, 'sine', 0.06); },
   hunterLost() {  // our ghost dissolves — the reversed death spiral
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.quiet()) return;
     const t = this.ctx.currentTime;
     for (let i = 0; i < 10; i++) {
       this.blip(820 - i * 70, 700 - i * 65, 0.1, 'square', 0.12, t + i * 0.1);
@@ -798,20 +817,20 @@ const Sound = {
     this.noiseBurst(0.25, 0.12, t + 1.02);
   },
   capture() {  // we caught him
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.quiet()) return;
     const t = this.ctx.currentTime;
     [220, 330, 440, 660, 880].forEach((f, i) => this.blip(f, f * 1.4, 0.1, 'square', 0.14, t + i * 0.07));
     this.noiseBurst(0.35, 0.16, t + 0.4);
     this.blip(1200, 200, 0.5, 'sawtooth', 0.1, t + 0.42);
   },
-  uiFreeze() { this.blip(700, 350, 0.06, 'triangle', 0.1); },
-  uiThaw() { this.blip(350, 700, 0.06, 'triangle', 0.1); },
-  uiCommit() { this.blip(950, 950, 0.03, 'square', 0.08); },
-  uiClear() { this.blip(300, 140, 0.08, 'square', 0.07); },
+  uiFreeze() { this.uiBlip(700, 350, 0.06, 'triangle', 0.1); },
+  uiThaw() { this.uiBlip(350, 700, 0.06, 'triangle', 0.1); },
+  uiCommit() { this.uiBlip(950, 950, 0.03, 'square', 0.08); },
+  uiClear() { this.uiBlip(300, 140, 0.08, 'square', 0.07); },
 
   /* original start-of-round jingle (composed for this game) */
   jingle() {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.quiet()) return;
     const t = this.ctx.currentTime + 0.05;
     const N = { A3: 220, C4: 261.6, D4: 293.7, E4: 329.6, G4: 392, A4: 440, C5: 523.3, E5: 659.3, D5: 587.3, B4: 493.9 };
     const lead = [
@@ -829,7 +848,7 @@ const Sound = {
     bass.forEach(([f, at, d]) => this.blip(f, f, d, 'triangle', 0.14, t + at));
   },
   levelClear() {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.quiet()) return;
     const t = this.ctx.currentTime;
     [330, 415, 494, 659, 831, 988].forEach((f, i) => this.blip(f, f, 0.12, 'square', 0.12, t + i * 0.11));
   },
@@ -2868,6 +2887,8 @@ function startDemo() {
   game.demo = true;
   game.demoFright = false;
   game.phase = 'attract';
+  // a siren left running from the round that just ended would outlive it
+  Sound.stopSiren();
 }
 
 /* ------------------------------ main loop ------------------------------- */
