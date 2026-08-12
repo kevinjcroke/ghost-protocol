@@ -103,11 +103,21 @@ Four ghosts, one mouse, one brain. The game is the coordination.
 
 Command one ghost at a time and you will lose. The score knows: there is one
 number, and it is a speed meter — **the dots he never got, times the level**,
-banked at the moment of capture. Catch him fast and the board pays; let him
-graze first and it doesn't. A multi-directional pincer earns its banner and
+banked at *each* capture. Catch him fast and the board pays; let him graze
+first and it doesn't. A multi-directional pincer earns its banner and
 fanfare, and its real reward is built in: pincers catch him sooner, and
 sooner *is* the score. The rising siren and the falling payout are the same
 clock.
+
+**He has three lives per board**, the way the original's yellow guy did — his
+reserve sits in the bottom HUD row next to your contracts. A capture spends
+one: everyone resets to spawn, a fresh READY, redraw your plans. But the
+dots he ate **stay eaten**. His grazing is progress you can never give back,
+which cuts both ways: each of his lives is worth less to you than the last
+(fewer dots left to bank), and each is more dangerous to you than the last
+(he's that much closer to clearing the maze, and the energizers he's already
+spent are gone too). Only the third catch flashes the board and advances the
+level. The extra board arrives at 10000.
 
 Your ghosts are *not* slower than him in any meaningful way — they run at
 near parity. Their handicap is that they cannot improvise. He re-decides at
@@ -125,7 +135,8 @@ energizer is a real tactic.
 
 ## Progression
 
-Win a board by catching him. Lose one if he clears every dot. Each level he
+Win a board by catching him three times. Lose one if he clears every dot —
+across however many lives he has left, since the dots stay eaten. Each level he
 gets faster, his lookahead deepens, his willingness to gamble on a feint goes
 up, and he starts reading further into the orders you've already committed —
 by level 4 he is predicting your drawn paths, not just reacting to positions.
@@ -181,10 +192,11 @@ stub DOM, so the whole game can be exercised headlessly in about a second.
 node test/test-game.js && node test/validate-maze.js && node test/no-infinite-lanes.js && node test/palette-lock.js
 ```
 
-- **test-game.js** — 34 checks: path retraction, loop closure, self-crossing,
+- **test-game.js** — 59 checks: path retraction, loop closure, self-crossing,
   the refusal to reroute, orders queued from the den, the wall-stop rule, the
-  energizer role reversal, eyes and respawn, capture and pincer scoring, board
-  loss, level flow, and a 30,000-tick soak.
+  energizer role reversal, eyes and respawn, capture and pincer scoring, his
+  three lives and the dots that stay eaten across them, board loss, level
+  flow, and a 30,000-tick soak.
 - **validate-maze.js** — proves the board is mirror-symmetric, fully
   connected, and free of dead ends and 2×2 rooms.
 - **no-infinite-lanes.js** — walks all 1,328 straight runs on the board and

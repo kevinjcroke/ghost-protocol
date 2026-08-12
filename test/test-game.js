@@ -257,11 +257,47 @@ console.log('\n== energizer role reversal ==');
   ok('and it respawns back into play', h.state === 'active');
 }
 
-console.log('\n== capture, pincer scoring, level flow ==');
+console.log('\n== a frightened statue is dinner, not lava ==');
+{
+  /* Field report: a wall-stopped ghost in the corner, the energized evader
+     chasing it -- and he 180'd one step from eating it. The soft danger
+     model knew frightened hunters are food, but the hard never-step-on-a-
+     statue veto did not, and the veto outranks everything. */
+  toPlay();
+  game.phase = 'play';
+  const ev = game.evader;
+  game.hunters.forEach(h => { h.state = 'active'; h.path = null; h.dir = null;
+                              h.x = tcx(26); h.y = tcy(1); });
+  const h = game.hunters[0];
+  h.x = tcx(1); h.y = tcy(29);           // parked dead in the lower-left corner
+  game.frightT = 400;
+  tick(2);
+  const key = 29 * COLS + 1;
+  ok('a parked hunter is not lethal terrain while he can eat it',
+     !game.parkedTiles.has(key), { parked: [...game.parkedTiles] });
+
+  game.frightT = 20;                     // clock about to flip
+  tick(2);
+  ok('near fright expiry the statue turns back into a wall that kills',
+     game.parkedTiles.has(key));
+
+  // the user-visible behavior: chased into the corner, the statue gets eaten
+  game.frightT = 400;
+  ev.x = tcx(4); ev.y = tcy(29); ev.dir = 'left';
+  let n = 0;
+  while (h.state === 'active' && game.frightT > 60 && n++ < 500) tick(1);
+  ok('a cornered frightened statue gets eaten, not orbited',
+     h.state === 'dissolving' || h.state === 'eyes', { state: h.state, n });
+}
+
+console.log('\n== capture, lives, pincer scoring, level flow ==');
 {
   toPlay();
   game.phase = 'play';
   game.frightT = 0;
+  // he has grazed: this progress must survive his deaths
+  game.dotsEaten = 40;
+  const grazed = game.dotsEaten;
   const ev = game.evader;
   const h1 = game.hunters[0], h2 = game.hunters[1];
   h1.state = 'active'; h2.state = 'active';
@@ -276,10 +312,34 @@ console.log('\n== capture, pincer scoring, level flow ==');
      && Math.abs(game.captureInfo.dotsLeft - dotsLeftNow) <= 3,
      { gained: game.score - before, info: game.captureInfo });
   tick(90);
-  ok('the board flashes', game.phase === 'flash');
+  ok('a first capture spends a life, not the board',
+     game.evaderLives === 2 && game.phase === 'ready' && game.level === 1,
+     { lives: game.evaderLives, ph: game.phase, lvl: game.level });
+  ok('and the dots he ate stay eaten', game.dotsEaten === grazed,
+     { eaten: game.dotsEaten });
+
+  // catch him twice more; only the third catch ends the board
+  const catchHim = () => {
+    game.phase = 'play';
+    const h = game.hunters[0];
+    h.state = 'active'; h.x = game.evader.x; h.y = game.evader.y;
+    tick(3);
+  };
+  const beforeSecond = game.score;
+  catchHim();
+  tick(90);
+  ok('the second capture banks again and respawns him',
+     game.score > beforeSecond && game.evaderLives === 1 && game.phase === 'ready',
+     { lives: game.evaderLives, ph: game.phase });
+  catchHim();
+  tick(90);
+  ok('the third capture flashes the board', game.phase === 'flash',
+     { ph: game.phase });
   tick(150);
-  ok('then the next level starts', game.level === 2 && game.phase === 'ready',
-     { lvl: game.level, ph: game.phase });
+  ok('then the next level starts with his lives refilled',
+     game.level === 2 && game.phase === 'ready'
+     && game.evaderLives === 3 && game.dotsEaten === 0,
+     { lvl: game.level, ph: game.phase, lives: game.evaderLives });
 }
 
 console.log('\n== the camp limit is a dial ==');

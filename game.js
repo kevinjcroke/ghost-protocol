@@ -1921,6 +1921,7 @@ const game = {
   score: 0,
   high: 0,
   contracts: 3,
+  evaderLives: 3,       // his lives on the current board; dots persist across them
   extraAwarded: false,
   tick: 0,
   phaseT: 0,
@@ -1969,7 +1970,7 @@ const game = {
 
   startLevel(rebuildDots) {
     this.params = levelParams(this.level);
-    if (rebuildDots) { buildMaze(); this.dotsEaten = 0; }
+    if (rebuildDots) { buildMaze(); this.dotsEaten = 0; this.evaderLives = 3; }
     this.resetActors();
     this.lastFruitAt = -1;
     this.phase = 'ready';
@@ -1987,6 +1988,7 @@ const game = {
     this.hint = true;
     buildMaze();
     this.dotsEaten = 0;
+    this.evaderLives = 3;
     this.startLevel(false);
   },
 
@@ -1996,7 +1998,9 @@ const game = {
       this.high = this.score;
       try { localStorage.setItem('ghostProtocolHigh', String(this.high)); } catch (e) {}
     }
-    if (!this.extraAwarded && this.score >= 5000) {
+    /* 10000, not 5000: each board now banks up to three captures, so the
+       old threshold would hand out the extra board almost immediately. */
+    if (!this.extraAwarded && this.score >= 10000) {
       this.extraAwarded = true;
       this.contracts++;
       this.popup(NATIVE_W / 2, 130, 'EXTRA BOARD', PAL.white);
@@ -2076,9 +2080,15 @@ const game = {
         r: Math.max(0, Math.min(MAZE_ROWS - 1, t.r)),
       });
       this.hunterFutures[i] = h.isThreat() ? hunterFuture(h, this) : [];
-      // a parked hunter is a wall that kills: the evader's routing has to
-      // treat its tile as impassable, not as a distant threat
-      if (h.isThreat() && !h.path && !h.dir && t.c >= 0 && t.c < COLS) {
+      /* A parked hunter is a wall that kills: the evader's routing has to
+         treat its tile as impassable, not as a distant threat. Unless
+         fright has made it food -- then the wall is dinner, and this hard
+         veto must not overrule the hunt (dangerAt already knows they're
+         food; the veto outranks it, so it has to know too). Near expiry
+         the tile turns lethal again: lunging at a statue as the clock
+         flips is how an eater becomes a score. */
+      if (h.isThreat() && !h.path && !h.dir && t.c >= 0 && t.c < COLS
+          && this.frightT <= 45) {
         this.parkedTiles.add(t.r * COLS + wrapCol(t.c));
       }
     }
@@ -2106,10 +2116,11 @@ const game = {
   },
 
   /* One score, and it is a speed meter: the dots he never got, times the
-     level. Catch him fast and the board pays; let him graze first and it
-     doesn't. A pincer earns its banner and fanfare but no separate number,
-     because the system already pays for pincers the honest way -- they
-     catch him sooner, and sooner IS the score. */
+     level, banked at EACH capture -- a board pays up to three times, and
+     speed matters three times, because the dots he ate stay eaten across
+     his lives. A pincer earns its banner and fanfare but no separate
+     number, because the system already pays for pincers the honest way --
+     they catch him sooner, and sooner IS the score. */
   beginCapture(hunter) {
     this.phase = 'capture';
     this.phaseT = 0;
@@ -2151,7 +2162,15 @@ const game = {
     }
     if (this.phase === 'capture') {
       this.phaseT++;
-      if (this.phaseT === 80) { this.phase = 'flash'; this.flashT = 0; Sound.levelClear(); }
+      if (this.phaseT === 80) {
+        /* He has lives, the way the original's yellow guy did. A capture
+           spends one; the board and its dots persist across his deaths, so
+           his grazing is progress we can never give back. Only the third
+           catch clears the board. */
+        this.evaderLives--;
+        if (this.evaderLives > 0) this.startLevel(false);
+        else { this.phase = 'flash'; this.flashT = 0; Sound.levelClear(); }
+      }
       return;
     }
     if (this.phase === 'flash') {
@@ -2633,6 +2652,11 @@ function drawHUD(g) {
   const by = (HUD_TOP + MAZE_ROWS) * TILE;
   for (let i = 0; i < Math.max(0, game.contracts); i++) {
     g.drawImage(SPRITES.minis[HUNTER_DEFS[0].key], (2 + i) * TILE, by);
+  }
+  /* His lives in reserve, drawn apart from our contracts: red specters are
+     boards we can still lose, yellow discs are catches he can still absorb. */
+  for (let i = 0; i < Math.max(0, game.evaderLives - 1); i++) {
+    g.drawImage(SPRITES.minis.gob, (8 + i) * TILE, by);
   }
   const shown = Math.min(game.level, 6);
   for (let i = 0; i < shown; i++) {
