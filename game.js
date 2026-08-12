@@ -828,24 +828,44 @@ const Sound = {
   uiCommit() { this.uiBlip(950, 950, 0.03, 'square', 0.08); },
   uiClear() { this.uiBlip(300, 140, 0.08, 'square', 0.07); },
 
-  /* original start-of-round jingle (composed for this game) */
+  /* Original start-of-round jingle (composed for this game), arranged in
+     the 1980 arcade-intro idiom: a staccato square lead over a triangle
+     bass that slides up into every note, one phrase answered by itself a
+     whole step higher, then a chromatic run to a held top note. The
+     grammar is the era's; the melody is ours. */
   jingle() {
     if (!this.ctx || this.quiet()) return;
     const t = this.ctx.currentTime + 0.05;
-    const N = { A3: 220, C4: 261.6, D4: 293.7, E4: 329.6, G4: 392, A4: 440, C5: 523.3, E5: 659.3, D5: 587.3, B4: 493.9 };
+    const S = 0.13;  // sixteenth-note pulse
+    const N = {
+      C3: 130.8, D3: 146.8, E3: 164.8, F3: 174.6, G3: 196.0,
+      E5: 659.3, F5: 698.5, Fs5: 740.0, G5: 784.0, Gs5: 830.6,
+      A5: 880.0, B5: 987.8, C5: 523.3, C6: 1046.5, D5: 587.3,
+      D6: 1174.7, E6: 1318.5, Fs6: 1480.0,
+    };
+    // phrase in C: climb root-fifth-octave-tenth, bounce back down
     const lead = [
-      [N.A3, 0.00, 0.14], [N.E4, 0.15, 0.14], [N.A4, 0.30, 0.14], [N.C5, 0.45, 0.20],
-      [N.B4, 0.70, 0.12], [N.G4, 0.84, 0.12], [N.E4, 0.98, 0.18],
-      [N.A3, 1.25, 0.14], [N.D4, 1.40, 0.14], [N.A4, 1.55, 0.14], [N.D5, 1.70, 0.20],
-      [N.C5, 1.95, 0.12], [N.E5, 2.09, 0.26],
-      [N.A4, 2.45, 0.12], [N.C5, 2.59, 0.12], [N.E5, 2.73, 0.34],
+      [N.C5, 0 * S, 0.10], [N.G5, 1 * S, 0.10], [N.C6, 2 * S, 0.10],
+      [N.E6, 3 * S, 0.15], [N.C6, 4.5 * S, 0.10], [N.A5, 5.5 * S, 0.10],
+      [N.G5, 6.5 * S, 0.20],
+      // the same phrase, lifted a whole step to D
+      [N.D5, 9 * S, 0.10], [N.A5, 10 * S, 0.10], [N.D6, 11 * S, 0.10],
+      [N.Fs6, 12 * S, 0.15], [N.D6, 13.5 * S, 0.10], [N.B5, 14.5 * S, 0.10],
+      [N.A5, 15.5 * S, 0.20],
+      // rising chromatic run into the held top note
+      [N.E5, 18 * S, 0.09], [N.F5, 19 * S, 0.09], [N.Fs5, 20 * S, 0.09],
+      [N.G5, 21 * S, 0.09], [N.Gs5, 22 * S, 0.09], [N.A5, 23 * S, 0.09],
+      [N.B5, 24 * S, 0.09], [N.C6, 25 * S, 0.50],
     ];
-    lead.forEach(([f, at, d]) => this.blip(f, f, d, 'square', 0.12, t + at));
+    lead.forEach(([f, at, d]) => this.blip(f, f, d, 'square', 0.11, t + at));
+    // slap bass: every note slides up into its pitch from a fifth below
     const bass = [
-      [N.A3 / 2, 0.0, 0.3], [N.A3 / 2, 0.45, 0.3], [N.D4 / 2, 1.25, 0.3],
-      [N.D4 / 2, 1.7, 0.3], [N.A3 / 2, 2.45, 0.55],
+      [N.C3, 0 * S, 0.22], [N.C3, 4.5 * S, 0.22],
+      [N.D3, 9 * S, 0.22], [N.D3, 13.5 * S, 0.22],
+      [N.E3, 18 * S, 0.18], [N.F3, 20 * S, 0.18], [N.G3, 22 * S, 0.18],
+      [N.C3, 25 * S, 0.5],
     ];
-    bass.forEach(([f, at, d]) => this.blip(f, f, d, 'triangle', 0.14, t + at));
+    bass.forEach(([f, at, d]) => this.blip(f * 0.66, f, d, 'triangle', 0.17, t + at));
   },
   levelClear() {
     if (!this.ctx || this.quiet()) return;
@@ -2173,7 +2193,8 @@ const game = {
   update() {
     this.tick++;
     if (this.phase === 'ready') {
-      if (++this.phaseT > 210) {
+      // 4s: the jingle runs ~3.8s and the siren must not start over it
+      if (++this.phaseT > 240) {
         this.phase = 'play';
         Sound.startSiren();
       }

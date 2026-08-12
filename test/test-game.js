@@ -21,7 +21,11 @@ function tick(n) {
     game.popups = game.popups.filter(p => --p.t > 0);
   }
 }
-function toPlay() { game.newGame(); tick(230); }
+function toPlay() {
+  game.newGame();
+  while (game.phase === 'ready') game.update();  // wait out READY, whatever its length
+  tick(20);
+}
 
 console.log('\n== path drawing ==');
 toPlay();
