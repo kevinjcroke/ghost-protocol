@@ -261,6 +261,29 @@ console.log('\n== energizer role reversal ==');
   ok('and it respawns back into play', h.state === 'active');
 }
 
+console.log('\n== eyes eaten on the doorstep still make it home ==');
+{
+  /* Field report: eyes stalled just above the den door. A hunter eaten
+     mid-stride ON the doorstep tile starts off the tile's center, the
+     route home is zero tiles long so nothing ever moves it, and the old
+     hand-off demanded sub-pixel alignment. It bobbed there forever. */
+  toPlay();
+  game.phase = 'play';
+  const h = game.hunters[1];
+  h.state = 'eyes'; h.path = null; h.dir = null;
+  h.x = tcx(13) - 2.7;   // struck walking across the doorstep: off-center
+  h.y = tcy(11);
+  let n = 0;
+  while (h.state === 'eyes' && n++ < 200) tick(5);
+  ok('doorstep eyes hand off to the den instead of stalling',
+     h.state === 'enteringDen' || h.state === 'respawn', { state: h.state });
+  n = 0;
+  while (h.state !== 'respawn' && n++ < 200) tick(5);
+  ok('and they land parked on the respawn seam',
+     h.state === 'respawn' && h.x === 112 && h.y === tcy(14),
+     { state: h.state, x: h.x, y: h.y });
+}
+
 console.log('\n== a frightened statue is dinner, not lava ==');
 {
   /* Field report: a wall-stopped ghost in the corner, the energized evader

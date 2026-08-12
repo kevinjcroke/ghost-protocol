@@ -1079,8 +1079,11 @@ class Hunter {
     if (this.state === 'eyes') {
       this.speed = game.params.eyeSpeed;
       const t = this.tile();
-      if (t.c === EYE_TARGET.c && t.r === EYE_TARGET.r
-          && Math.abs(this.x - tcx(EYE_TARGET.c)) < 1 && Math.abs(this.y - tcy(EYE_TARGET.r)) < 1) {
+      /* Hand off on tile arrival alone. Eyes eaten mid-stride start off
+         tile center, and a route that ends where it began never moves them
+         back onto it -- demanding sub-pixel alignment here stranded them
+         on the doorstep. enteringDen re-centers both axes itself. */
+      if (t.c === EYE_TARGET.c && t.r === EYE_TARGET.r) {
         this.state = 'enteringDen';
         this.dir = null;
         return;
@@ -2249,7 +2252,10 @@ const game = {
 
     for (const h of this.hunters) {
       if (h.state === 'dissolving') {
-        if (++h.dissolveT > 36) { h.state = 'eyes'; h.dir = 'up'; }
+        /* dir null, not 'up': the first step asks the BFS for a legal
+           heading instead of drifting into whatever sits above the spot
+           where the evader happened to strike */
+        if (++h.dissolveT > 36) { h.state = 'eyes'; h.dir = null; }
         continue;
       }
       h.update(this);
