@@ -1264,22 +1264,20 @@ const Draw = {
   active: null,     // { hunter, tiles:[{c,r}], closable }
   erase: null,      // { hunter } during right-drag erase
   selected: 0,      // roster slot the number keys point at
-  lastPicked: -1,   // for cycling through a stack of ghosts on one tile
   sticky: false,    // selection came from a button/key, not a click on the pile
+  tapAdvances: false, // this press landed on the ghost already held
 
   /* Selection made out-of-band -- roster button, number key, Tab, the game
-     itself. Sticky: the next click on a pile holding this ghost grabs it
-     rather than cycling past it. You already said which ghost you meant. */
+     itself. Sticky: the next tap on a pile holding this ghost keeps it
+     rather than stepping past it. You already said which ghost you meant. */
   select(i) {
     this.selected = i;
-    this.lastPicked = i;
     this.sticky = true;
   },
 
-  /* Ghosts pile up -- three of them leave the den on the same tile, and a
-     click can only ever land on one. So clicking a stack cycles through it,
-     and every ghost keeps a permanent number that selects it outright. */
-  pickAt(px, py) {
+  /* Everyone commandable within reach of a point. If several are truly
+     stacked, the pile is just them; otherwise nearest-first. */
+  poolAt(px, py) {
     const near = [];
     game.hunters.forEach((h, i) => {
       if (!h.isCommandable()) return;
@@ -1287,22 +1285,40 @@ const Draw = {
       const d2 = dx * dx + dy * dy;
       if (d2 < 144) near.push({ h, i, d2 });
     });
-    if (!near.length) return null;
     near.sort((a, b) => a.d2 - b.d2);
-    // if several are stacked here, take the one after whoever we took last
     const stacked = near.filter(n => n.d2 < 64);
-    const pool = stacked.length > 1 ? stacked : near;
-    let choice = pool[0];
-    if (pool.length > 1) {
-      const at = pool.findIndex(n => n.i === this.lastPicked);
-      // a sticky selection means this click, if that ghost is here, takes it
-      if (this.sticky && at >= 0) choice = pool[at];
-      else choice = pool[(at + 1) % pool.length];
-    }
+    return stacked.length > 1 ? stacked : near;
+  },
+
+  /* Ghosts pile up -- three of them leave the den on the same tile, and a
+     click can only ever land on one. The gesture disambiguates: a press
+     grabs the ghost you already hold if it is here (else the nearest), so
+     dragging always commands the ghost you can see on top; TAPPING --
+     press and release without a drag -- steps through the pile (cycleAt).
+     And every ghost keeps a permanent number that selects it outright. */
+  pickAt(px, py) {
+    const pool = this.poolAt(px, py);
+    if (!pool.length) return null;
+    const cur = pool.find(n => n.i === this.selected);
+    const choice = cur || pool[0];
+    // tapping the ghost you already held means "the next one down" --
+    // unless you only just named it by button or number key
+    this.tapAdvances = !!cur && !this.sticky;
     this.sticky = false;
-    this.lastPicked = choice.i;
     this.selected = choice.i;
     return choice.h;
+  },
+
+  /* The release half of a tap: no drag happened, so the press was a
+     browse, not a command. Step to the next ghost under the cursor. */
+  cycleAt(px, py) {
+    if (!this.tapAdvances) return;
+    this.tapAdvances = false;
+    const pool = this.poolAt(px, py);
+    if (pool.length < 2) return;
+    const at = pool.findIndex(n => n.i === this.selected);
+    if (at < 0) return;
+    this.selected = pool[(at + 1) % pool.length].i;
   },
 
   begin(hunter) {
@@ -2619,7 +2635,11 @@ function bindInput() {
     if (ev.button === 2) { input.rightDown = false; Draw.endErase(); return; }
     if (ev.button !== 0) return;
     input.leftDown = false;
-    if (game.phase === 'command' && Draw.active) Draw.commit(input.dragMoved);
+    if (game.phase === 'command' && Draw.active) {
+      Draw.commit(input.dragMoved);
+      // a tap, not a drag: browse to the next ghost in the pile
+      if (!input.dragMoved) { const p = toNative(ev); Draw.cycleAt(p.x, p.y); }
+    }
     input.dragOrigin = null;
   });
   window.addEventListener('resize', layout);
@@ -2741,7 +2761,10 @@ function drawCommandOverlay(g) {
       if (!h.path && !h.dir && blink) {
         drawText(g, '!', hx - 4, hy - 16, PAL.white);
       }
-      if (blink && !Draw.active) {
+      /* Brackets mark the SELECTED ghost only, and hold steady. When all
+         four blinked at once, "selected" was invisible on the board; the
+         blink stays reserved for the needs-orders alert above. */
+      if (i === Draw.selected && !Draw.active) {
         // selection brackets: corners only, so the sprite stays readable
         g.fillStyle = PAL.white;
         for (const sx of [-9, 8]) {

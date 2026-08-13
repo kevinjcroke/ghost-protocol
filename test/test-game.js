@@ -103,24 +103,37 @@ console.log('\n== stacked ghosts stay reachable ==');
   H.forEach(h => { h.state = 'active'; h.path = null; h.dir = 'left';
                    h.x = tcx(6); h.y = tcy(8); });
   game.phase = 'command';
+  Draw.sticky = false; Draw.tapAdvances = false; Draw.selected = 0;
+  // a TAP is pickAt (press) + cycleAt (release with no drag in between)
   const picks = [];
   for (let i = 0; i < 5; i++) {
     const p = Draw.pickAt(tcx(6), tcy(8));
     picks.push(p ? p.key : null);
+    Draw.cycleAt(tcx(6), tcy(8));
   }
-  ok('clicking a pile of ghosts cycles through every one of them',
+  ok('tapping a pile of ghosts steps through every one of them',
      new Set(picks.slice(0, 4)).size === 4, { picks });
-  ok('and the cycle wraps back round', picks[4] === picks[0], { picks });
+  ok('and the browse wraps back round', picks[4] === picks[0], { picks });
 
-  // a roster-button pick is sticky: the first click on the pile keeps the
-  // chosen ghost instead of toggling past it; the click after that cycles
+  // a drag never browses: the press must grab the ghost already held, and
+  // a dragMoved release skips cycleAt entirely
+  const before = Draw.selected;
+  const held = Draw.pickAt(tcx(6), tcy(8));
+  ok('a press grabs the ghost already held, not the next one',
+     held === H[before], { before, held: held && held.key });
+
+  // a roster-button pick is sticky: a full tap on the pile keeps the
+  // chosen ghost instead of stepping past it; the tap after that browses
   Draw.select(1);
   const kept = Draw.pickAt(tcx(6), tcy(8));
-  ok('a button-selected ghost survives the first click on its pile',
-     kept === H[1], { kept: kept && kept.key });
-  const after = Draw.pickAt(tcx(6), tcy(8));
-  ok('and the next click resumes the toggle',
-     after !== H[1], { after: after && after.key });
+  Draw.cycleAt(tcx(6), tcy(8));
+  ok('a button-selected ghost survives a full tap on its pile',
+     kept === H[1] && Draw.selected === 1,
+     { kept: kept && kept.key, selected: Draw.selected });
+  Draw.pickAt(tcx(6), tcy(8));
+  Draw.cycleAt(tcx(6), tcy(8));
+  ok('and the tap after that browses onward',
+     Draw.selected !== 1, { selected: Draw.selected });
 
   Draw.selected = 2;                     // as a number key would
   Draw.begin(H[Draw.selected]);
