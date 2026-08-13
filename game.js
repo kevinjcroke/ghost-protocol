@@ -1822,7 +1822,16 @@ class Evader {
           const hd = dg[idx];
           if (hd >= 0) {
             const wakeTicks = hd * (TILE / game.params.hunterSpeed) + 45;
-            worst = Math.min(worst, Math.max(0, wakeTicks - ticks));
+            /* A statue does not advance while he walks, so its threat is a
+               fact about distance, not about when he arrives. Subtracting
+               the arrival tick treated it as if it started chasing the
+               moment he planned the route, which painted a permanent no-go
+               zone around every statue when seen from across the board --
+               dots parked next to one became unreachable in his mind. The
+               ambush case is unchanged: when he is already close, arrival
+               was near zero anyway, and the moment a statue gets orders it
+               becomes a moving threat with real pursuit math. */
+            worst = Math.min(worst, wakeTicks);
           }
         }
         continue;
@@ -1879,20 +1888,30 @@ class Evader {
       if (exits.length !== 1) {   // junction or dead-end: stop the walk
         // junction quality: more ways out = better
         const margin2 = minMargin + exits.length * 2;
+        /* Safe dots are meals, not decoration. At 1.2 a dot was noise
+           against the margin and junction terms, so "stand one tile from
+           the pile" scored the same as "eat the pile" and safe leftovers
+           were orbited forever. Under pressure the old weight returns:
+           snacking while hunted stays a rounding error, as it should. */
+        const snackW = minMargin > 30 ? 12 : 1.2;
         let score = Math.min(minMargin, 60) * 3 + exits.length * 5
-          + snacks * 1.2 + fruitBonus * (minMargin > 20 ? 14 : 0);
+          + snacks * snackW + fruitBonus * (minMargin > 20 ? 14 : 0);
         // one pursuer: run the gradient away from it before anything else
         if (this.fleeGrid && minMargin < 45 && c >= 0 && c < COLS) {
           const fd = this.fleeGrid[r * COLS + wrapCol(c)];
           if (fd >= 0) score += Math.min(fd, 26) * 2.2;
         }
-        /* When it is genuinely safe, head toward whatever food is left. The
-           gate matters: chasing dots with a hunter three tiles away is how
-           he used to walk himself into corners, and a lone chaser could farm
-           that mistake all the way to a capture. */
+        /* When it is genuinely safe, head toward whatever food is left --
+           from anywhere: the pull used to fade out at 24 tiles, so a far
+           cluster exerted nothing and he orbited the safe middle. It grows
+           as the board empties; the last dots are the ones he should be
+           most determined to finish. The safety gate still matters:
+           chasing dots with a hunter three tiles away is how he used to
+           walk himself into corners, and a lone chaser could farm that
+           mistake all the way to a capture. */
         if (minMargin > 30 && game.foodDist && c >= 0 && c < COLS) {
           const fd = game.foodDist[r * COLS + wrapCol(c)];
-          if (fd >= 0) score += Math.max(0, 24 - fd) * 0.8;
+          if (fd >= 0) score += Math.max(0, 70 - fd) * (0.8 + game.boldness() * 1.2);
         }
         // cornered? an energizer run is worth everything
         if (energ) score += (minMargin < 25 ? 80 : game.frightT > 0 ? -40 : 6);
@@ -1928,8 +1947,17 @@ class Evader {
            comfortable margin and the sealed corridor repels hard, because a
            cul-de-sac is exactly where a second body turns him into a score.
            (Flat-refusing every sealed corridor was worse: it shrank his map
-           so badly that one chaser could herd him around the perimeter.) */
-        const sealed = Math.min(minMargin, 60) * 3 + snacks * 1.2 - 6;
+           so badly that one chaser could herd him around the perimeter.)
+           When it IS safe, the meal inside must outscore hovering at the
+           mouth: the open-route branch gets a food-pull bonus, so without
+           the same term here "stand next to the pile" beat "walk in and
+           eat it" forever -- guarded leftovers were never finished. */
+        const safeHere = minMargin > 30;
+        let sealed = Math.min(minMargin, 60) * 3 + snacks * (safeHere ? 12 : 1.2) - 6;
+        if (safeHere && game.foodDist && c >= 0 && c < COLS) {
+          const fd = game.foodDist[r * COLS + wrapCol(c)];
+          if (fd >= 0) sealed += Math.max(0, 70 - fd) * (0.8 + game.boldness() * 1.2);
+        }
         return minMargin < 30 ? sealed - 70 : sealed;
       }
       if (seen.has(key)) break;

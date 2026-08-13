@@ -436,6 +436,37 @@ console.log('\n== losing a board ==');
      { ph: game.phase, c: game.contracts });
 }
 
+console.log('\n== the last dots pull him from across the board ==');
+{
+  toPlay();
+  game.phase = 'play';
+  game.campLimit = null;   // parked statues are allowed to sit
+  /* The endgame that exposed him: two last clusters on opposite flanks,
+     each with a statue parked at the mouth of its corridor, him orbiting
+     the middle. Three separate sins kept this board alive forever: the
+     food pull faded out at 24 tiles, a statue's wake-grace decayed with
+     his arrival time (painting no-go zones around guarded dots), and a
+     dot was worth 1.2 points against a margin term of 180 -- so hovering
+     one tile from the pile scored the same as eating it. */
+  const D = dots();
+  for (let r = 0; r < D.length; r++)
+    for (let c = 0; c < COLS; c++) D[r][c] = 0;
+  for (let c = 2; c <= 5; c++) D[11][c] = 1;
+  for (let c = 22; c <= 25; c++) D[11][c] = 1;
+  game.dotsEaten = dotTotal() - 8;
+  game.hunters.forEach(h => { h.state = 'active'; h.path = null; h.dir = null;
+                              h.x = tcx(26); h.y = tcy(29); });
+  game.hunters[0].x = tcx(1);  game.hunters[0].y = tcy(11);
+  game.hunters[1].x = tcx(26); game.hunters[1].y = tcy(11);
+  game.evader.x = tcx(13); game.evader.y = tcy(17); game.evader.dir = 'left';
+  game.foodDist = null;    // force a rebuild against the stripped board
+  let t = 0;
+  while (t < 4000 && game.phase === 'play') { tick(1); t++; }
+  ok('he finishes statue-guarded leftovers instead of orbiting them',
+     game.phase === 'escaped', { ph: game.phase, left: dotTotal() - game.dotsEaten, t });
+  game.campLimit = 0;      // restore the harness default
+}
+
 console.log('\n== the contested prize ==');
 {
   toPlay();
