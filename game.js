@@ -3067,16 +3067,19 @@ function drawAttract(g) {
     return;
   }
   // page 1: how to command
+  /* Every line is a complete thought: these render centered, so the eye
+     takes each one as a unit and a sentence broken mid-clause garden-paths. */
   drawTextCentered(g, 'YOU ARE THE GHOSTS', cx, 40, PAL.yellow);
-  drawTextCentered(g, 'GRAB A GHOST AND TIME', cx, 70, PAL.white);
-  drawTextCentered(g, 'STOPS. DRAG TO DRAW', cx, 82, PAL.white);
-  drawTextCentered(g, 'THE PATH IT WILL WALK', cx, 94, PAL.white);
-  drawTextCentered(g, 'CLOSE THE LOOP TO PATROL', cx, 118, PAL.cyan);
-  drawTextCentered(g, 'DRAG BACK TO ERASE', cx, 130, PAL.cyan);
-  drawTextCentered(g, 'NO ORDERS MEANS STUPID', cx, 154, PAL.red);
-  drawTextCentered(g, 'WALLS STOP IDLE GHOSTS', cx, 166, PAL.red);
-  drawTextCentered(g, 'CATCH THE THIEF', cx, 186, PAL.yellow);
-  drawTextCentered(g, 'BEFORE HE EATS THE MAZE', cx, 198, PAL.yellow);
+  drawTextCentered(g, 'GRAB A GHOST. TIME STOPS.', cx, 64, PAL.white);
+  drawTextCentered(g, 'DRAG THE PATH IT WILL WALK', cx, 76, PAL.white);
+  drawTextCentered(g, 'CLOSE THE LOOP TO PATROL', cx, 94, PAL.cyan);
+  drawTextCentered(g, 'DRAG BACK TO ERASE', cx, 106, PAL.cyan);
+  drawTextCentered(g, 'NO ORDERS MEANS STUPID', cx, 124, PAL.red);
+  drawTextCentered(g, 'WALLS STOP IDLE GHOSTS', cx, 136, PAL.red);
+  drawTextCentered(g, 'HE OUTRUNS ANY ONE OF YOU', cx, 154, PAL.orange);
+  drawTextCentered(g, 'HUNT AS A PACK OR STARVE', cx, 166, PAL.orange);
+  drawTextCentered(g, 'CATCH THE YELLOW GUY', cx, 184, PAL.yellow);
+  drawTextCentered(g, 'BEFORE HE EATS THE MAZE', cx, 196, PAL.yellow);
   const h = HUNTER_DEFS[(a.t / 130 | 0) % 4];
   g.drawImage(SPRITES.hunters[h.key].normal.right[(uiFrame / 8 | 0) % 2], cx - 30, 210);
   g.drawImage(SPRITES.gob.right[(uiFrame / 6 | 0) % 3], cx + 14, 210);
