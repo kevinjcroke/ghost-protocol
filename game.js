@@ -56,6 +56,12 @@ const PAL = {
   wallDim: '#002197',
   dotDim:  '#C89751',   // one ladder step down per channel: dims without hue shift
   doorDim: '#975147',
+  /* later boards re-tint the frame, the way Ms. Pac-Man's cabinets did.
+     Each wall color ships with its own frozen-bank partner. */
+  wall2:    '#21C851',
+  wall2Dim: '#009721',
+  wall3:    '#F09721',
+  wall3Dim: '#975100',
 };
 PAL.frightW = PAL.white;   // the flash is plain white, not a second near-white
 
@@ -67,16 +73,17 @@ const HUNTER_DEFS = [
 ];
 
 /* ------------------------------- maze ----------------------------------
-   Original layout. 28x31. Mirror-symmetric.
+   Original layouts. 28x31. Mirror-symmetric.
    '#' wall  '.' dot  'o' energizer  ' ' open (no dot)  '-' den door
-   Row 11 and row 20 are wrap tunnels.
+   Boards rotate as the levels climb; every board keeps the same den block,
+   den exit, fruit seam, and evader spawn, so only the walls change.
 ------------------------------------------------------------------------- */
 
-/* The den sits astride the one wrapping row, which matters more than it
-   looks: a tunnel row open across the full width would let an unordered
-   hunter circle the board forever without ever meeting a wall, and the rule
-   that an unordered hunter eventually stops dead is the whole game. Every
-   straight run in here terminates in a wall. */
+/* Board one: the den sits astride its only wrapping row, which matters more
+   than it looks -- a tunnel row open across the full width would let an
+   unordered hunter circle the board forever without ever meeting a wall, and
+   the rule that an unordered hunter eventually stops dead is the whole game.
+   Every straight run in here terminates in a wall. */
 const MAZE_SRC = [
   '############################',
   '#............##............#',
@@ -111,7 +118,111 @@ const MAZE_SRC = [
   '############################',
 ];
 
-const TUNNEL_ROWS = [14];
+/* Board two: the den-row tunnel closes and two new ones open above and
+   below it, so the flanking runs move away from the den's doorstep. */
+const MAZE_SRC_2 = [
+  '############################',
+  '#..........................#',
+  '#.##.###.###.##.###.###.##.#',
+  '#o##.###.###.##.###.###.##o#',
+  '#.##.###.###.##.###.###.##.#',
+  '#..........................#',
+  '#.####.#####.##.#####.####.#',
+  '#.####.#####.##.#####.####.#',
+  ' ......##....##....##...... ',
+  '#.####.##.##.##.##.##.####.#',
+  '#.####.##.##.##.##.##.####.#',
+  '#..........................#',
+  '#.##.####.###--###.####.##.#',
+  '#.##.####.#      #.####.##.#',
+  '#.........#      #.........#',
+  '#.##.####.#      #.####.##.#',
+  '#.##.####.########.####.##.#',
+  '#..........................#',
+  '#.####.##.##.##.##.##.####.#',
+  '#.####.##.##.##.##.##.####.#',
+  ' ......##....##....##...... ',
+  '#.####.#####.##.#####.####.#',
+  '#.####.#####.##.#####.####.#',
+  '#..........................#',
+  '#.##.###.###.##.###.###.##.#',
+  '#o##.###.###.##.###.###.##o#',
+  '#.##.###.###.##.###.###.##.#',
+  '#..........................#',
+  '#.####.#####.##.#####.####.#',
+  '#..........................#',
+  '############################',
+];
+
+/* Board three: three tunnels, den row included. The most porous board --
+   by the time it appears the player can steer four hunters at once and the
+   evader needs every side door he can get. */
+const MAZE_SRC_3 = [
+  '############################',
+  '#............##............#',
+  '#.##.#.##.##.##.##.##.#.##.#',
+  '#o##.#.##.##.##.##.##.#.##o#',
+  '#.##.#.##.##.##.##.##.#.##.#',
+  ' ......##....##....##...... ',
+  '#.####.##.##.##.##.##.####.#',
+  '#.####.##.##.##.##.##.####.#',
+  '#..........................#',
+  '#.####.#####.##.#####.####.#',
+  '#.####.#####.##.#####.####.#',
+  '#..........................#',
+  '#.####.##.###--###.##.####.#',
+  '#.####.##.#      #.##.####.#',
+  ' ......##.#      #.##...... ',
+  '#.####.##.#      #.##.####.#',
+  '#.####.##.########.##.####.#',
+  '#..........................#',
+  '#.####.#####.##.#####.####.#',
+  '#.####.#####.##.#####.####.#',
+  '#..........................#',
+  '#.###.##.###.##.###.##.###.#',
+  '#.###.##.###.##.###.##.###.#',
+  ' .....##............##..... ',
+  '#.###.##.###.##.###.##.###.#',
+  '#o###.##.###.##.###.##.###o#',
+  '#.###.##.###.##.###.##.###.#',
+  '#..........................#',
+  '#.####.#####.##.#####.####.#',
+  '#..........................#',
+  '############################',
+];
+
+/* Every tunnel row keeps a wall somewhere on it (board one uses the den
+   itself), because an unbroken wrap row would let an unordered hunter circle
+   forever and quietly repeal the wall-stop rule. test/no-infinite-lanes.js
+   walks every board to hold that line. */
+const BOARDS = [
+  { src: MAZE_SRC,   tunnels: [14],         wall: PAL.wall,  wallDim: PAL.wallDim },
+  { src: MAZE_SRC_2, tunnels: [8, 20],      wall: PAL.wall2, wallDim: PAL.wall2Dim },
+  { src: MAZE_SRC_3, tunnels: [5, 14, 23],  wall: PAL.wall3, wallDim: PAL.wall3Dim },
+];
+
+let TUNNEL_ROWS = BOARDS[0].tunnels;
+let boardIdx = -1;
+
+/* Ms. Pac-Man's rotation, roughly: the opener gets two levels, each later
+   board a little longer, then the two tunnel-heavy boards alternate. */
+function boardForLevel(n) {
+  if (n <= 2) return 0;
+  if (n <= 5) return 1;
+  if (n <= 9) return 2;
+  return Math.floor((n - 10) / 4) % 2 === 0 ? 1 : 2;
+}
+
+function setBoard(i) {
+  if (i === boardIdx) return;
+  boardIdx = i;
+  TUNNEL_ROWS = BOARDS[i].tunnels;
+  buildMaze();
+  buildWallDistance();
+  mazeLayer = renderMazeLayer(BOARDS[i].wall, PAL.door);
+  mazeLayerDim = renderMazeLayer(BOARDS[i].wallDim, PAL.doorDim);
+  mazeLayerWhite = renderMazeLayer(PAL.white, PAL.white);
+}
 const DEN = { top: 12, bottom: 16, left: 10, right: 17,  // wall bounds
               inTop: 13, inBottom: 15, inLeft: 11, inRight: 16 };
 const DOOR_ROW = 12, DOOR_C0 = 13, DOOR_C1 = 14;
@@ -125,11 +236,12 @@ let walls = [];
 let dots = [];        // current dots: 0 none, 1 dot, 2 energizer
 let dotTotal = 0;
 function buildMaze() {
+  const src = BOARDS[boardIdx].src;
   walls = []; dots = []; dotTotal = 0;
   for (let r = 0; r < MAZE_ROWS; r++) {
     const wrow = [], drow = [];
     for (let c = 0; c < COLS; c++) {
-      const ch = MAZE_SRC[r][c];
+      const ch = src[r][c];
       wrow.push(ch === '#' || ch === '-');
       let d = 0;
       if (ch === '.') d = 1;
@@ -2069,7 +2181,10 @@ const game = {
 
   startLevel(rebuildDots) {
     this.params = levelParams(this.level);
-    if (rebuildDots) { buildMaze(); this.dotsEaten = 0; this.evaderLives = 3; }
+    if (rebuildDots) {
+      setBoard(boardForLevel(this.level));
+      buildMaze(); this.dotsEaten = 0; this.evaderLives = 3;
+    }
     this.resetActors();
     this.lastFruitAt = -1;
     this.phase = 'ready';
@@ -2085,6 +2200,7 @@ const game = {
     this.extraAwarded = false;
     this.fruitHistory = [];
     this.hint = true;
+    setBoard(0);
     buildMaze();
     this.dotsEaten = 0;
     this.evaderLives = 3;
@@ -2439,6 +2555,7 @@ function enterAttract() {
   game.attract = { page: 0, t: 0, introStep: 0 };
   game.demo = false;
   Sound.stopSiren();
+  setBoard(0);   // the marquee always shows the opener
   buildMaze();
 }
 
@@ -3916,12 +4033,8 @@ function drawHelpLayer(ctx) {
 let mazeLayerDim, mazeLayerWhite;
 
 function boot() {
-  buildMaze();
   buildSprites();
-  buildWallDistance();
-  mazeLayer = renderMazeLayer(PAL.wall, PAL.door);
-  mazeLayerDim = renderMazeLayer(PAL.wallDim, PAL.doorDim);
-  mazeLayerWhite = renderMazeLayer(PAL.white, PAL.white);
+  setBoard(0);   // builds maze, wall distance field, and the wall layers
   try { game.high = parseInt(localStorage.getItem('ghostProtocolHigh') || '0', 10) || 0; } catch (e) {}
   loadCampChoice();
 

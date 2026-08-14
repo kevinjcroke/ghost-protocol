@@ -8,16 +8,9 @@
       "port": 8123
     },
     {
-      "name": "ghost-protocol-node",
+      "name": "pacman",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["C:\\Users\\KEVINC~1\\AppData\\Local\\Temp\\claude\\C--Users-kevincroke-NotWork-Pacman\\4b8687b4-6f5f-40c5-87ed-da889dd20651\\scratchpad\\static-server.js"],
-      "port": 8123,
-      "autoPort": true
-    },
-    {
-      "name": "ghost-protocol-node-2",
-      "runtimeExecutable": "node",
-      "runtimeArgs": ["C:\\Users\\KEVINC~1\\AppData\\Local\\Temp\\claude\\C--Users-kevincroke-NotWork-Pacman\\a300a2f0-771c-48e1-a688-4c414db3c0d5\\scratchpad\\static-server.js"],
+      "runtimeArgs": ["C:\\Users\\KEVINC~1\\AppData\\Local\\Temp\\claude\\C--Users-kevincroke-NotWork-Pacman\\d191887d-5359-4618-ab10-e3533e2469cf\\scratchpad\\static-server.js"],
       "port": 8123,
       "autoPort": true
     }
