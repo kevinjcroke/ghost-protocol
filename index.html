@@ -3,36 +3,83 @@
 <head>
 <meta charset="utf-8">
 <title>GHOST PROTOCOL</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <style>
   html, body {
     margin: 0; padding: 0;
-    background: #000;
+    background: #07080c;
     height: 100%;
     overflow: hidden;
     cursor: crosshair;
+    /* On a phone each of these is a way to lose the gesture: the page
+       zooming under a pinch, the board scrolling under a drawn path, a
+       double tap zooming instead of freezing, the browser offering to
+       select text or preview a "link" on a long press. The cabinet is the
+       whole document, so the whole document opts out. */
+    touch-action: none;
+    overscroll-behavior: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
   }
   body {
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 10px;
+    height: 100dvh;   /* the URL bar comes and goes; 100% does not notice */
   }
   #cabinet {
     position: relative;
     line-height: 0;
-    border-radius: 18px;
+    border-radius: 14px;
     overflow: hidden;
-    box-shadow: 0 0 120px 10px rgba(30, 40, 120, 0.25) inset;
+    box-shadow:
+      0 0 90px 8px rgba(33, 48, 240, 0.18),
+      0 0 8px 2px rgba(0, 0, 0, 0.9) inset;
   }
   #screen {
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     display: block;
   }
+  #hint {
+    font: 11px/1.6 ui-monospace, Menlo, Consolas, monospace;
+    letter-spacing: 0.08em;
+    color: #8fa0c0;
+    user-select: none;
+    max-width: 90vw;
+    text-align: center;
+    text-wrap: balance;
+  }
+  #hint b { color: #f0c897; font-weight: 600; }
+  /* narrow glass: the hint wraps to two lines rather than running off it */
+  @media (max-width: 520px) {
+    #hint { font-size: 10px; letter-spacing: 0.05em; }
+  }
 </style>
 </head>
 <body>
   <div id="cabinet"><canvas id="screen"></canvas></div>
+  <div id="hint">NEW HERE? CLICK THE <b>?</b> CHIP, TOP RIGHT &nbsp;&middot;&nbsp; THE CLICK IS THE CLOCK</div>
+  <script>
+    /* The shell speaks the same idiom the game does. A phone player has no
+       click to give, and the ? chip is the one control worth pointing at
+       before they have touched anything. Runs before the engine so the line
+       never flickers through the wrong wording. */
+    (function () {
+      try {
+        var coarse = navigator.maxTouchPoints > 0
+          && !(window.matchMedia && window.matchMedia('(pointer: fine)').matches);
+        if (coarse) {
+          document.getElementById('hint').innerHTML =
+            'NEW HERE? TAP THE <b>?</b> CHIP, TOP RIGHT &nbsp;&middot;&nbsp; THE TAP IS THE CLOCK';
+        }
+      } catch (e) {}
+    })();
+  </script>
   <script>
     // Served over http, browsers hang onto a stale game.js even with no-store,
     // so ask for a unique URL. Opened straight off disk, load it plainly --

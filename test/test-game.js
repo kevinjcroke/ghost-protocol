@@ -320,6 +320,7 @@ console.log('\n== a frightened statue is dinner, not lava ==');
                               h.x = tcx(26); h.y = tcy(1); });
   const h = game.hunters[0];
   h.x = tcx(1); h.y = tcy(29);           // parked dead in the lower-left corner
+  game.triggerFright();                  // the real path: clears den-exit immunity
   game.frightT = 400;
   tick(2);
   const key = 29 * COLS + 1;
@@ -566,6 +567,313 @@ console.log('\n== the manual ==');
   try { render(); render(); } catch (e) { threw = e.message; }
   ok('the open manual renders headlessly without throwing', threw === null, { threw });
   closeHelp();
+}
+
+console.log('\n== leaving the den sheds the blue ==');
+{
+  /* Classic rule: an eaten hunter that walks home and re-emerges is a
+     hunter again, even while the fright clock still runs. Only a fresh
+     energizer re-blues it. */
+  toPlay();
+  game.phase = 'play';
+  const h = game.hunters[1];
+  game.hunters.forEach(x => {
+    if (x === h) return;
+    x.state = 'active'; x.path = null; x.dir = null; x.x = tcx(26); x.y = tcy(29);
+  });
+  game.evader.x = tcx(1); game.evader.y = tcy(29);
+
+  game.triggerFright();
+  ok('an energizer blues the squad', h.frightImmune === false && game.frightT > 0);
+
+  // fast-forward the den stay: respawn -> exitingDen -> exiting -> active
+  h.state = 'respawn'; h.respawnT = 1; h.x = 112; h.y = tcy(14); h.path = null; h.dir = null;
+  let t = 0;
+  while (h.state !== 'active' && t < 300) { h.update(game); t++; }
+  ok('a hunter that walks out of the den mid-fright sheds the blue',
+     h.state === 'active' && h.frightImmune === true && game.frightT > 0,
+     { state: h.state, immune: h.frightImmune, frightT: game.frightT });
+
+  h.dir = 'left'; h.update(game);
+  ok('and it hunts at full speed, not the fright crawl',
+     h.speed === game.params.hunterSpeed,
+     { speed: h.speed, fright: game.params.hunterFrightSpeed });
+
+  game.evader.x = h.x; game.evader.y = h.y;
+  game.checkCollisions();
+  ok('touching it mid-fright is a capture, not a meal',
+     game.phase === 'capture' && h.state === 'active',
+     { ph: game.phase, st: h.state });
+
+  game.phase = 'play';
+  game.triggerFright();
+  ok('a fresh energizer blues it again', h.frightImmune === false);
+  game.evader.x = h.x; game.evader.y = h.y;
+  game.checkCollisions();
+  ok('and now it is back on the menu', h.state === 'dissolving', { st: h.state });
+}
+
+console.log('\n== touch controls ==');
+{
+  /* Driven through the real bound listeners with real TouchEvent shapes,
+     because every interesting bug here is in the plumbing -- which finger
+     is primary, which list an event carries, what a release means. */
+  const { fire, screen, render, touch, touchEvent, rosterUI, input } = API;
+  const S = () => API.scale;
+
+  // the canvas rect is 224x288, so client px are native px; display px are
+  // native px x scale, and the roster lives in display space
+  const start = (...ts) => fire(screen, 'touchstart',
+    touchEvent('touchstart', ts, [ts[ts.length - 1]]));
+  const move = (...ts) => fire(screen, 'touchmove', touchEvent('touchmove', ts, ts));
+  const end = (remaining, lifted) => fire(screen, 'touchend',
+    touchEvent('touchend', remaining, [lifted]));
+  const nat = (col, row) => touch(1, col * 8 + 4, row * 8 + 4 + 24);   // +HUD
+
+  ok('touch handlers are actually bound',
+     !!(screen.listeners.touchstart && screen.listeners.touchmove
+        && screen.listeners.touchend && screen.listeners.touchcancel));
+
+  {
+    const ev = touchEvent('touchstart', [nat(1, 1)]);
+    fire(screen, 'touchstart', ev);
+    ok('a touch is swallowed so the page cannot scroll or zoom under it',
+       ev.defaultPrevented === true);
+    ok('and the first finger puts the game in the finger idiom',
+       API.touchMode === true);
+    fire(screen, 'touchend', touchEvent('touchend', [], [nat(1, 1)]));
+  }
+
+  console.log('  -- one finger is the mouse');
+  toPlay();
+  game.phase = 'play';
+  {
+    const h = game.hunters[0];
+    game.hunters.forEach(x => { x.state = 'active'; x.path = null; x.dir = null; });
+    h.x = tcx(1); h.y = tcy(1);
+
+    start(nat(1, 1));
+    ok('a finger on the board freezes time', game.phase === 'command');
+    ok('landing on a ghost starts its trail', !!Draw.active && Draw.active.hunter === h);
+
+    move(nat(4, 1));
+    move(nat(6, 1));
+    ok('dragging extends the trail down the corridor',
+       Draw.active.tiles.length === 6, { len: Draw.active && Draw.active.tiles.length });
+
+    end([], nat(6, 1));
+    ok('lifting commits the path', !!h.path && h.path.tiles.length === 6,
+       { path: h.path && h.path.tiles.length });
+    ok('and the game stays frozen: committing is not the same as going',
+       game.phase === 'command');
+  }
+
+  console.log('  -- the tap that means go waits for the finger to lift');
+  {
+    game.hunters.forEach(x => { x.path = null; x.dir = 'left'; });   // nobody overdue
+    game.phase = 'command';
+    const empty = touch(7, 1 * 8 + 4, 5 * 8 + 4 + 24);
+    start(empty);
+    ok('a finger down on empty floor does NOT resume yet',
+       game.phase === 'command' && input.pendingResume === true);
+    end([], empty);
+    ok('lifting it does', game.phase === 'play');
+  }
+
+  console.log('  -- a thumb roll is still a tap');
+  {
+    /* The bug this exists to stop: a fingertip rolls several px just being
+       pressed down. That was over the cursor-sized drag threshold, so every
+       tap on a pile of ghosts landed as a drag -- the pile stopped stepping
+       and the ghost on top walked off along a two-tile order nobody gave.
+       Rolls past the drag slop (12) ride on the quick-tap ruling instead:
+       the stubbed clock makes every harness press instantaneous, which is
+       the honest reading of a synthetic start/move/end burst. */
+    const roll = [0, 3, 6, 9, 11, 16, 22];   // native px; last two are past the slop
+    const results = [];
+    for (const d of roll) {
+      toPlay();
+      game.phase = 'command';
+      game.hunters.forEach(h => { h.state = 'active'; h.path = null; h.dir = 'left';
+                                  h.x = tcx(6); h.y = tcy(8); });
+      Draw.sticky = false; Draw.tapAdvances = false; Draw.selected = 0;
+      const picks = [];
+      for (let i = 0; i < 4; i++) {
+        const a = touch(1, 6 * 8 + 4, 8 * 8 + 4 + 24);
+        const b = touch(1, 6 * 8 + 4 + d, 8 * 8 + 4 + 24);
+        start(a); move(b); end([], b);
+        picks.push(Draw.selected);
+      }
+      results.push({ d, picks: picks.join(','), stray: game.hunters.some(h => h.path) });
+    }
+    ok('a tap steps through the pile however much the thumb rolls',
+       results.every(r => r.picks === '1,2,3,0'), results);
+    ok('and leaves no order behind it',
+       results.every(r => !r.stray), results.filter(r => r.stray));
+  }
+
+  console.log('  -- a fat finger near the pile is aiming at the pile');
+  {
+    /* The pick reach used to be 12px -- cursor-sized. A tap 15px off a
+       stack found nothing, fell through to "empty floor", and the round
+       restarted under a hand that was aiming at four ghosts. */
+    toPlay();
+    game.phase = 'command';
+    game.hunters.forEach(h => { h.state = 'active'; h.path = null; h.dir = 'left';
+                                h.x = tcx(6); h.y = tcy(8); });
+    Draw.sticky = false; Draw.tapAdvances = false; Draw.selected = 0;
+    const off = touch(1, 6 * 8 + 4 + 15, 8 * 8 + 4 + 24);   // 15px right of the stack
+    start(off); end([], off);
+    ok('a tap that misses the stack by 15px still lands on it',
+       game.phase === 'command', { ph: game.phase });
+    ok('and it browses rather than resuming', Draw.selected === 1,
+       { selected: Draw.selected });
+  }
+
+  console.log('  -- drawing through the tunnel');
+  {
+    /* A finger cannot leave the glass, so the wrap tile beyond the screen
+       edge was unreachable and the horizontal tunnel might as well not
+       have existed. Pressure against the playfield edge now targets it. */
+    toPlay();
+    game.phase = 'command';
+    const h = game.hunters[0];
+    game.hunters.forEach(x => { x.state = 'active'; x.path = null; x.dir = 'left';
+                                x.x = tcx(20); x.y = tcy(20); });
+    h.x = tcx(3); h.y = tcy(14); h.dir = null;    // near the left tunnel mouth
+    start(touch(1, 3 * 8 + 4, 14 * 8 + 4 + 24));
+    move(touch(1, 1 * 8 + 4, 14 * 8 + 4 + 24));   // declare the drag
+    move(touch(1, 2, 14 * 8 + 4 + 24));           // press against the edge
+    const tiles = Draw.active && Draw.active.tiles.map(t => t.c);
+    ok('the tip walks into the wrap zone', tiles && tiles.includes(27),
+       { tiles });
+    end([], touch(1, 2, 14 * 8 + 4 + 24));
+    ok('and the committed order crosses the seam',
+       h.path && h.path.tiles.some(t => t.c === 27) && h.path.tiles.some(t => t.c <= 1),
+       { path: h.path && h.path.tiles.map(t => t.c) });
+
+    // the right mouth, same story
+    game.phase = 'command';
+    h.path = null; h.x = tcx(24); h.y = tcy(14); h.dir = null;
+    Draw.select(0);
+    start(touch(2, 24 * 8 + 4, 14 * 8 + 4 + 24));
+    move(touch(2, 26 * 8 + 4, 14 * 8 + 4 + 24));
+    move(touch(2, 224 - 2, 14 * 8 + 4 + 24));
+    end([], touch(2, 224 - 2, 14 * 8 + 4 + 24));
+    ok('the right edge wraps too',
+       h.path && h.path.tiles.some(t => t.c === 0),
+       { path: h.path && h.path.tiles.map(t => t.c) });
+
+    // and everywhere else the beyond-edge tile is wall: nothing moves
+    game.phase = 'command';
+    h.path = null; h.x = tcx(1); h.y = tcy(1); h.dir = null;
+    Draw.select(0);
+    start(touch(3, 1 * 8 + 4, 1 * 8 + 4 + 24));
+    move(touch(3, 1 * 8 + 4, 3 * 8 + 4 + 24));    // declare the drag downward
+    move(touch(3, 2, 3 * 8 + 4 + 24));            // then press against the edge
+    const offRow = Draw.active && Draw.active.tiles.every(t => t.c >= 0 && t.c <= 1);
+    end([], touch(3, 2, 3 * 8 + 4 + 24));
+    ok('off a tunnel row the edge is just a wall', offRow === true,
+       { path: h.path && h.path.tiles.map(t => t.c) });
+  }
+
+  console.log('  -- but a real stroke still commands');
+  {
+    toPlay();
+    game.phase = 'command';
+    game.hunters.forEach(h => { h.state = 'active'; h.path = null; h.dir = 'left';
+                                h.x = tcx(1); h.y = tcy(1); });
+    Draw.sticky = false; Draw.tapAdvances = false; Draw.selected = 0;
+    start(touch(1, 1 * 8 + 4, 1 * 8 + 4 + 24));
+    for (const c of [3, 4, 5, 6]) move(touch(1, c * 8 + 4, 1 * 8 + 4 + 24));
+    end([], touch(1, 6 * 8 + 4, 1 * 8 + 4 + 24));
+    ok('a drawn stroke orders the ghost it started on',
+       game.hunters[0].path && game.hunters[0].path.tiles.length === 6,
+       { tiles: game.hunters[0].path && game.hunters[0].path.tiles.length });
+    ok('and does not also browse the pile out from under it',
+       Draw.selected === 0, { selected: Draw.selected });
+  }
+
+  console.log('  -- a thumb that slides has changed its mind');
+  {
+    game.hunters.forEach(x => { x.path = null; x.dir = 'left'; });
+    game.phase = 'command';
+    const down = touch(8, 1 * 8 + 4, 5 * 8 + 4 + 24);
+    start(down);
+    move(touch(8, 3 * 8 + 4, 5 * 8 + 4 + 24));    // well past the drag threshold
+    end([], touch(8, 3 * 8 + 4, 5 * 8 + 4 + 24));
+    ok('a tap that turns into a slide does not restart the clock',
+       game.phase === 'command', { ph: game.phase });
+  }
+
+  console.log('  -- the first finger owns the gesture');
+  {
+    toPlay();
+    game.phase = 'command';
+    const h = game.hunters[1];
+    game.hunters.forEach(x => { x.state = 'active'; x.path = null; x.dir = 'left'; });
+    h.x = tcx(1); h.y = tcy(1); h.dir = null;
+
+    const f1 = touch(1, 1 * 8 + 4, 1 * 8 + 4 + 24);
+    const f2 = touch(2, 5 * 8 + 4, 5 * 8 + 4 + 24);
+    start(f1);
+    ok('the trail is live', !!Draw.active && Draw.active.hunter === h);
+    const held = Draw.active.tiles.length;
+
+    start(f1, f2);
+    ok('a palm landing mid-draw is ignored, not a second gesture',
+       !!Draw.active && Draw.active.hunter === h
+       && Draw.active.tiles.length === held);
+    // and it cannot steer: a move carrying both reads only the first finger
+    move(f1, touch(2, 12 * 8 + 4, 5 * 8 + 4 + 24));
+    ok('nor can it drag the trail somewhere the drawing finger never went',
+       Draw.active.tiles.length === held, { len: Draw.active.tiles.length });
+
+    end([f1], f2);
+    ok('and the trail survives its departure', !!Draw.active);
+    end([], f1);
+    ok('only the drawing finger lifting commits', !!h.path || Draw.active === null);
+  }
+
+  console.log('  -- finger-sized targets');
+  {
+    toPlay();
+    game.phase = 'command';
+    render();                       // lays out the roster rects for this frame
+    const camp = rosterUI.camp;
+    const before = game.campChoice;
+    // a thumb landing 3 display px above the chip: a miss for a cursor
+    const above = { clientX: (camp.x + camp.w / 2) / S(), clientY: (camp.y - S() * 3) / S() };
+    API.setTouchMode(false);
+    fire(screen, 'mousedown', { button: 0, clientX: above.clientX, clientY: above.clientY });
+    fire(API.win, 'mouseup', { button: 0, clientX: above.clientX, clientY: above.clientY });
+    ok('a cursor that misses the camp chip misses it', game.campChoice === before,
+       { before, after: game.campChoice });
+
+    game.phase = 'command';
+    render();
+    API.setTouchMode(true);
+    start(touch(9, above.clientX, above.clientY));
+    end([], touch(9, above.clientX, above.clientY));
+    ok('a finger that misses it by the same margin still hits',
+       game.campChoice === (before + 1) % 5, { before, after: game.campChoice });
+  }
+
+  console.log('  -- the manual speaks the right idiom');
+  {
+    const { openHelp, closeHelp, HELP_ROWS } = API;
+    ok('every touch phrase is a real replacement, not a duplicate',
+       HELP_ROWS.every(r => (!r.at || r.at !== r.a) && (!r.bt || r.bt !== r.b)));
+    ok('the click instructions have finger counterparts',
+       HELP_ROWS[0].at && HELP_ROWS[0].bt && HELP_ROWS[3].bt);
+    API.setTouchMode(true);
+    openHelp();
+    let threw = null;
+    try { render(); } catch (e) { threw = e.message; }
+    ok('the manual renders in touch mode without throwing', threw === null, { threw });
+    closeHelp();
+    API.setTouchMode(false);
+  }
 }
 
 console.log('\n' + (fail === 0 ? 'ALL ' + pass + ' CHECKS PASSED' : pass + ' passed, ' + fail + ' FAILED'));

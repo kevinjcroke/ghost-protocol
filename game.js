@@ -1072,6 +1072,7 @@ class Hunter {
     this.overdue = false;
     this.releaseT = 10 + this.slot * 30;    // rapid-fire den release: seconds, not a queue
     this.dissolveT = -1;
+    this.frightImmune = false;  // set on every den exit; only a fresh energizer clears it
   }
   tile() { return tileOfPx(this.x, this.y); }
   isThreat() { return this.state === 'active'; }
@@ -1182,6 +1183,10 @@ class Hunter {
       else {
         this.x = targetX;
         this.state = 'active';
+        /* Classic den rule: leaving the den always sheds the blue. A ghost
+           eaten and walked home re-emerges as a hunter even if the fright
+           clock is still running; only a fresh energizer re-blues it. */
+        this.frightImmune = true;
         // with an order the trail decides; without one, drift off along the
         // crossing so the parked statue ends up at the wall, not the door
         this.dir = hasOrder ? null : this.exitHeading;
@@ -1249,7 +1254,7 @@ class Hunter {
       this.campT = 0;
       this.overdue = false;
     }
-    const fright = game.frightT > 0;
+    const fright = game.frightT > 0 && !this.frightImmune;
     const t = this.tile();
     const inTunnel = TUNNEL_ROWS.includes(t.r) && (t.c <= 6 || t.c >= 21);
     this.speed = fright ? game.params.hunterFrightSpeed
@@ -1284,7 +1289,8 @@ class Hunter {
       g.drawImage(bank.eyes[this.dir || 'left'], x, y);
       return;
     }
-    const fright = game.frightT > 0 && this.state !== 'idle' && this.state !== 'respawn'
+    const fright = game.frightT > 0 && !this.frightImmune
+                   && this.state !== 'idle' && this.state !== 'respawn'
                    && this.state !== 'exitingDen' && this.state !== 'exiting';
     if (fright) {
       const flashing = game.frightT < 120 && ((game.frightT / 12 | 0) % 2 === 0);
@@ -1388,14 +1394,19 @@ const Draw = {
   },
 
   /* Everyone commandable within reach of a point. If several are truly
-     stacked, the pile is just them; otherwise nearest-first. */
+     stacked, the pile is just them; otherwise nearest-first. A fingertip's
+     contact patch is wider than 12px of glass, so touch reaches further --
+     and the error that buys is the safe one: a near-miss selects a ghost
+     instead of falling through to empty floor, where a tap means "go" and
+     the round restarts under a hand that was aiming at the pile. */
   poolAt(px, py) {
+    const reach = touchMode ? 18 : 12;
     const near = [];
     game.hunters.forEach((h, i) => {
       if (!h.isCommandable()) return;
       const dx = h.x - px, dy = h.y - py;
       const d2 = dx * dx + dy * dy;
-      if (d2 < 144) near.push({ h, i, d2 });
+      if (d2 < reach * reach) near.push({ h, i, d2 });
     });
     near.sort((a, b) => a.d2 - b.d2);
     const stacked = near.filter(n => n.d2 < 64);
@@ -1453,13 +1464,16 @@ const Draw = {
 
   /* The committed open path whose tip sits under this point, if any. */
   tipAt(game, px, py) {
+    // same courtesy as poolAt: an arrowhead is a smaller target than a
+    // ghost, and a missed grab falls through to the tap that means "go"
+    const reach = touchMode ? 14 : 8;
     let best = null;
     for (const h of game.hunters) {
       if (!h.path || h.path.closed || !h.path.tiles.length || !h.isCommandable()) continue;
       const tip = h.path.tiles[h.path.tiles.length - 1];
       const dx = tcx(tip.c) - px, dy = tcy(tip.r) - py;
       const d2 = dx * dx + dy * dy;
-      if (d2 < 64 && (!best || d2 < best.d2)) best = { h, d2 };
+      if (d2 < reach * reach && (!best || d2 < best.d2)) best = { h, d2 };
     }
     return best ? best.h : null;
   },
@@ -1874,11 +1888,13 @@ class Evader {
     for (let i = 0; i < game.hunters.length; i++) {
       const h = game.hunters[i];
       if (!h.isThreat() || (!h.path && !h.dir)) continue;
+      // edible bodies are not chasers; a den-fresh immune hunter still is
+      if (game.frightT > 0 && !h.frightImmune) continue;
       const dg = game.hunterDistGrids[i];
       const d = dg ? dg[t.r * COLS + wrapCol(t.c)] : -1;
       if (d >= 0 && d < 22) { movingThreats++; this.fleeGrid = dg; }
     }
-    if (movingThreats !== 1 || game.frightT > 0) this.fleeGrid = null;
+    if (movingThreats !== 1) this.fleeGrid = null;
 
     /* Never step onto a statue -- and that outranks the no-reverse rule.
        At the last tile of a sealed cul-de-sac the only forward option IS
@@ -1921,7 +1937,8 @@ class Evader {
       const h = game.hunters[i];
       if (!h.isThreat()) continue;
       const parked = !h.path && !h.dir;
-      if (game.frightT > ticks * 1.0) continue;      // they're food right now
+      // food right now -- unless it re-emerged from the den mid-fright
+      if (game.frightT > ticks * 1.0 && !h.frightImmune) continue;
       if (parked) {
         const ht = h.tile();
         if (ht.c === c && ht.r === r) return 0;
@@ -2032,7 +2049,7 @@ class Evader {
         if (game.frightT > 60) {
           for (let i = 0; i < game.hunters.length; i++) {
             const h = game.hunters[i];
-            if (!h.isThreat()) continue;
+            if (!h.isThreat() || h.frightImmune) continue;  // immune ones are not on the menu
             const dg = game.hunterDistGrids[i];
             if (!dg) continue;
             const hd = dg[r * COLS + wrapCol(c)];
@@ -2227,6 +2244,9 @@ const game = {
 
   triggerFright() {
     this.frightT = this.params.frightTicks;
+    // a fresh energizer blues everyone, including squad members that had
+    // shed the last fright by walking out of the den
+    for (const h of this.hunters) h.frightImmune = false;
     Sound.energize();
     // frightened hunters do NOT reverse or flee by themselves: your problem
   },
@@ -2303,7 +2323,7 @@ const game = {
          the tile turns lethal again: lunging at a statue as the clock
          flips is how an eater becomes a score. */
       if (h.isThreat() && !h.path && !h.dir && t.c >= 0 && t.c < COLS
-          && this.frightT <= 45) {
+          && (this.frightT <= 45 || h.frightImmune)) {
         this.parkedTiles.add(t.r * COLS + wrapCol(t.c));
       }
     }
@@ -2317,7 +2337,7 @@ const game = {
       const dx = h.x - this.evader.x, dy = h.y - this.evader.y;
       const touching = (ht.c === et.c && ht.r === et.r) || (dx * dx + dy * dy < 36);
       if (!touching) continue;
-      if (this.frightT > 0) {
+      if (this.frightT > 0 && !h.frightImmune) {
         // he eats our hunter
         h.dissolve();
         Sound.hunterLost();
@@ -2565,28 +2585,74 @@ const input = {
   mx: 0, my: 0,          // native px within playfield space (y excludes HUD)
   leftDown: false, rightDown: false,
   dragOrigin: null, dragMoved: false,
+  touchId: null,         // the finger currently standing in for the mouse
+  pendingResume: false,  // a touch that will mean "go" if it lifts as a tap
+  pressT: 0,             // when the press landed, for the quick-tap ruling
 };
+
+/* How far a press may wander and still count as a tap rather than a drag --
+   which is the difference between browsing a pile of ghosts and commanding
+   the one on top. A cursor does not wander at all, so six native px was
+   plenty; a thumb rolls a good deal further than that just being pressed
+   down, and every one of those taps was landing as a dead one-tile drag,
+   so a stack of ghosts stopped stepping altogether. Native px, so it means
+   the same thing at every window size: a tile and a half for a finger. */
+const TAP_SLOP = 6, TAP_SLOP_TOUCH = 12;
+
+/* Distance is not the only tell. A quick press that lands and lifts inside
+   a quarter second was a tap whatever the thumb did in between -- real
+   thumbs roll well past any slop you would dare give a drag threshold, and
+   commanding a ghost takes deliberation, not 200ms. Touch only: a mouse
+   never needs the second opinion. Travel is capped so a genuine flick of a
+   stroke, however fast, still reads as drawing. */
+const TAP_MS = 250, TAP_TRAVEL = 24;
+
+/* Which idiom the player is speaking. It is not a device capability but a
+   live observation -- a laptop with a touchscreen reads as a mouse until a
+   finger actually lands, and reverts the moment the mouse comes back. It
+   only ever changes wording and how far a hit target reaches, never rules. */
+let touchMode = (function () {
+  try {
+    if (typeof navigator === 'undefined' || !(navigator.maxTouchPoints > 0)) return false;
+    // a fine pointer alongside the digitizer means there is a mouse on the desk
+    return !(window.matchMedia && window.matchMedia('(pointer: fine)').matches);
+  } catch (e) { return false; }
+})();
 
 let screenCanvas, screenCtx, native, nativeCtx, dotScratch, scale = 2;
 let scanlines = null, vignette = null;
 
-function toNative(ev) {
+/* Both take anything carrying clientX/clientY -- a MouseEvent or a Touch --
+   so one finger and the mouse arrive at the game in the same coordinates. */
+function toNative(src) {
   // rect-relative, because the canvas raster is device pixels while the
   // rect is CSS pixels -- on a scaled Windows display they differ
   const rect = screenCanvas.getBoundingClientRect();
-  const x = (ev.clientX - rect.left) * (NATIVE_W / rect.width);
-  const y = (ev.clientY - rect.top) * (NATIVE_H / rect.height);
+  const x = (src.clientX - rect.left) * (NATIVE_W / rect.width);
+  const y = (src.clientY - rect.top) * (NATIVE_H / rect.height);
   return { x, y: y - HUD_TOP * TILE };
 }
-function toDisplay(ev) {
+function toDisplay(src) {
   const rect = screenCanvas.getBoundingClientRect();
   return {
-    x: (ev.clientX - rect.left) * (screenCanvas.width / rect.width),
-    y: (ev.clientY - rect.top) * (screenCanvas.height / rect.height),
+    x: (src.clientX - rect.left) * (screenCanvas.width / rect.width),
+    y: (src.clientY - rect.top) * (screenCanvas.height / rect.height),
   };
 }
-function inRect(p, r) {
-  return r && p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+/* Fingers are blunter than a cursor, so every control carries slop -- but
+   only in the directions where nothing else is standing. Growing a target
+   into its neighbour would make a deliberate tap do the wrong thing, which
+   is worse than a target that is merely small. Pads are in display px. */
+function tapPad(top, right, bottom, left) {
+  if (!touchMode) return null;
+  return { t: scale * top, r: scale * right, b: scale * bottom, l: scale * left };
+}
+function inRect(p, r, pad) {
+  if (!r) return false;
+  const t = pad ? pad.t : 0, rt = pad ? pad.r : 0;
+  const b = pad ? pad.b : 0, l = pad ? pad.l : 0;
+  return p.x >= r.x - l && p.x <= r.x + r.w + rt
+      && p.y >= r.y - t && p.y <= r.y + r.h + b;
 }
 
 function pauseToCommand() {
@@ -2702,36 +2768,45 @@ function bindInput() {
     }
   });
   screenCanvas.addEventListener('contextmenu', ev => ev.preventDefault());
-  screenCanvas.addEventListener('mousedown', (ev) => {
-    Sound.ensure(); Sound.resume();
-    const p = toNative(ev);
-    const dp = toDisplay(ev);
+
+  /* Press, drag, release: the only three verbs the game knows. Mouse buttons
+     and fingers both funnel through here, so there is exactly one set of
+     rules about what a gesture means -- no second, quietly divergent copy
+     for phones. `src` is a MouseEvent or a Touch. */
+  function pressDown(src, button) {
+    const p = toNative(src);
+    const dp = toDisplay(src);
     input.mx = p.x; input.my = p.y;
     /* The manual sits above everything, including the attract screen. While
        it is open no click reaches the game: the X or anywhere off the page
        closes it, everything else is ignored. */
     if (game.helpOpen) {
-      if (ev.button === 0 && (inRect(dp, helpUI.close) || !inRect(dp, helpUI.panel))) closeHelp();
+      if (button === 0 && (inRect(dp, helpUI.close, tapPad(4, 4, 4, 4)) || !inRect(dp, helpUI.panel))) closeHelp();
       return;
     }
-    if (ev.button === 0 && inRect(dp, helpUI.btn)) { openHelp(); return; }
+    if (button === 0 && inRect(dp, helpUI.btn, tapPad(3, 3, 3, 3))) { openHelp(); return; }
     if (game.phase === 'attract' || game.phase === 'gameover') { game.newGame(); return; }
-    if (ev.button === 2) {
+    if (button === 2) {
       input.rightDown = true;
       if (game.phase === 'play') { pauseToCommand(); return; }
       if (game.phase === 'command') Draw.beginErase(game, Math.floor(p.x / TILE), Math.floor(p.y / TILE), p.x, p.y);
       return;
     }
-    if (ev.button !== 0) return;
+    if (button !== 0) return;
     input.leftDown = true;
     input.dragOrigin = { x: p.x, y: p.y };
     input.dragMoved = false;
+    input.pressT = performance.now();
     if (game.phase !== 'play' && game.phase !== 'command') return;
     // roster buttons live in display space, above the glass
     if (game.phase === 'command') {
-      if (inRect(dp, rosterUI.play)) { resumeFromCommand(); return; }
-      if (inRect(dp, rosterUI.camp)) { cycleCampChoice(); return; }
-      const slot = rosterUI.slots.find(s => inRect(dp, s));
+      /* PLAY is the control a finger reaches for most, so it takes the whole
+         empty margin on its right; on its left it stops short of the last
+         roster plate. The camp chip grows upward into dead HUD space and
+         never down onto the plate beneath it. */
+      if (inRect(dp, rosterUI.play, tapPad(1.5, 10, 4, 0.5))) { resumeFromCommand(); return; }
+      if (inRect(dp, rosterUI.camp, tapPad(6, 3, 0, 8))) { cycleCampChoice(); return; }
+      const slot = rosterUI.slots.find(s => inRect(dp, s, tapPad(1, 1, 4, 1)));
       if (slot) {
         const h = game.hunters[slot.i];
         if (h && h.isCommandable()) {
@@ -2758,36 +2833,147 @@ function bindInput() {
         Draw.select(game.hunters.indexOf(tipOwner));
         return;
       }
-      // nothing under the cursor: this click means "go"
-      resumeFromCommand();
+      /* Nothing under the cursor: this click means "go". A finger has to
+         wait for its own release, because restarting the clock is the one
+         action here that cannot be taken back -- he eats while you are not
+         looking. A thumb that lands and then slides has changed its mind
+         (the drag threshold catches it) and the game stays frozen; a cursor
+         does not wander like that, so the mouse keeps deciding on press. */
+      if (touchMode) input.pendingResume = true;
+      else resumeFromCommand();
     }
-  });
-  window.addEventListener('mousemove', (ev) => {
-    const p = toNative(ev);
+  }
+
+  function pressMove(src) {
+    const p = toNative(src);
     input.mx = p.x; input.my = p.y;
     if (input.leftDown && input.dragOrigin) {
       const dx = p.x - input.dragOrigin.x, dy = p.y - input.dragOrigin.y;
-      if (dx * dx + dy * dy > 36) input.dragMoved = true;
+      const slop = touchMode ? TAP_SLOP_TOUCH : TAP_SLOP;
+      if (dx * dx + dy * dy > slop * slop) input.dragMoved = true;
     }
     if (game.phase !== 'command') return;
     if (Draw.active) {
-      Draw.extendToward(Math.floor(p.x / TILE), Math.floor(p.y / TILE));
+      /* Not until the gesture has declared itself a drag. The tip advances
+         after half a tile of travel, which is well inside the slop a tap is
+         allowed -- so a press that was only ever a browse used to leave a
+         stray two-tile order behind it, and the ghost walked off to a
+         corner nobody sent it to. The trail loses nothing by waiting: the
+         tip walks the whole way to the finger on the first move that
+         counts. */
+      /* The tunnel mouths sit against the screen edge, and drawing through
+         one means asking for a tile BEYOND that edge. A mouse just sails
+         off the canvas; a finger hits glass, and near the bezel the OS
+         claims the swipe for itself. So pressure against the playfield's
+         edge is read as intent: a pointer parked in the outermost strip
+         targets the wrap zone, and the tip walks the tunnel. Everywhere
+         but a tunnel row the beyond-edge tile is wall and nothing moves. */
+      let mc = Math.floor(p.x / TILE);
+      const edge = touchMode ? TILE : TILE / 2;
+      if (p.x < edge) mc = -1;
+      else if (p.x > NATIVE_W - edge) mc = COLS;
+      if (input.dragMoved) Draw.extendToward(mc, Math.floor(p.y / TILE));
     } else if (input.rightDown) {
       Draw.eraseSweep(p.x, p.y);
     }
+  }
+
+  function pressUp(src) {
+    input.leftDown = false;
+    if (game.phase === 'command' && Draw.active) {
+      const p = toNative(src);
+      let tap = !input.dragMoved;
+      if (!tap && touchMode && input.dragOrigin) {
+        // the second opinion: quick and short-travelled is a tap after all
+        const dx = p.x - input.dragOrigin.x, dy = p.y - input.dragOrigin.y;
+        tap = performance.now() - input.pressT < TAP_MS
+              && dx * dx + dy * dy < TAP_TRAVEL * TAP_TRAVEL;
+      }
+      // a tap never commands: whatever few tiles the roll grew, take back
+      if (tap && Draw.active.tiles.length > 1) Draw.active.tiles.length = 1;
+      Draw.commit(!tap && input.dragMoved);
+      /* A tap browses the pile -- judged from where the press LANDED, not
+         where the thumb happened to lift. The release point of a rolled tap
+         can sit outside the pile's reach entirely, and browsing from there
+         found one ghost where the player saw four. */
+      if (tap) {
+        const at = input.dragOrigin || p;
+        Draw.cycleAt(at.x, at.y);
+      }
+    } else if (input.pendingResume && !input.dragMoved) {
+      resumeFromCommand();
+    }
+    input.pendingResume = false;
+    input.dragOrigin = null;
+  }
+
+  screenCanvas.addEventListener('mousedown', (ev) => {
+    touchMode = false;
+    Sound.ensure(); Sound.resume();
+    pressDown(ev, ev.button);
   });
+  window.addEventListener('mousemove', (ev) => pressMove(ev));
   window.addEventListener('mouseup', (ev) => {
     if (ev.button === 2) { input.rightDown = false; Draw.endErase(); return; }
     if (ev.button !== 0) return;
-    input.leftDown = false;
-    if (game.phase === 'command' && Draw.active) {
-      Draw.commit(input.dragMoved);
-      // a tap, not a drag: browse to the next ghost in the pile
-      if (!input.dragMoved) { const p = toNative(ev); Draw.cycleAt(p.x, p.y); }
-    }
-    input.dragOrigin = null;
+    pressUp(ev);
   });
+
+  /* ---- touch ----
+     One finger is the mouse, and that is the whole vocabulary. The right
+     button's erase sweep gets no finger equivalent: drawing a new order is
+     already the way to change one, and retracting the tip mid-drag already
+     undoes a stroke -- both single-finger. A multi-touch gesture for the
+     remainder would be the most fragile thing on the phone in exchange for
+     an edit nobody reaches for.
+     Extra fingers are therefore not just unused but actively ignored: the
+     first finger down owns the gesture until it lifts, so a palm or a
+     second thumb cannot wrench a half-drawn path somewhere else. Every
+     touch event is swallowed whole, so the browser never scrolls, zooms, or
+     fires a stale synthetic click afterwards. */
+  const touchOpts = { passive: false };
+
+  function primaryTouch(ev) {
+    const live = ev.touches || [];
+    for (let i = 0; i < live.length; i++) {
+      if (live[i].identifier === input.touchId) return live[i];
+    }
+    return null;
+  }
+
+  screenCanvas.addEventListener('touchstart', (ev) => {
+    if (ev.cancelable) ev.preventDefault();
+    touchMode = true;
+    Sound.ensure(); Sound.resume();
+    const first = ev.changedTouches && ev.changedTouches[0];
+    if (!first || input.touchId !== null) return;   // a gesture is already running
+    input.touchId = first.identifier;
+    pressDown(first, 0);
+  }, touchOpts);
+
+  screenCanvas.addEventListener('touchmove', (ev) => {
+    if (ev.cancelable) ev.preventDefault();
+    const t = primaryTouch(ev);
+    if (t) pressMove(t);
+  }, touchOpts);
+
+  function touchRelease(ev) {
+    if (ev.cancelable) ev.preventDefault();
+    const changed = ev.changedTouches || [];
+    let mine = null;
+    for (let i = 0; i < changed.length; i++) {
+      if (changed[i].identifier === input.touchId) mine = changed[i];
+    }
+    if (!mine) return;              // some other finger let go; not our gesture
+    input.touchId = null;
+    pressUp(mine);
+  }
+  screenCanvas.addEventListener('touchend', touchRelease, touchOpts);
+  screenCanvas.addEventListener('touchcancel', touchRelease, touchOpts);
+
   window.addEventListener('resize', layout);
+  // phones report the new dimensions a beat after they announce the turn
+  window.addEventListener('orientationchange', () => setTimeout(layout, 60));
 }
 
 /* ------------------------------ rendering ------------------------------- */
@@ -3061,7 +3247,8 @@ function drawAttract(g) {
       drawText(g, '"' + h.nick + '"', 120, y, h.color);
     }
     if (a.t > 380 && (uiFrame / 20 | 0) % 2 === 0) {
-      drawTextCentered(g, 'PUSH START', cx, 230, PAL.orange);
+      // no cabinet has a START button under a thumb
+      drawTextCentered(g, touchMode ? 'TAP TO START' : 'PUSH START', cx, 230, PAL.orange);
     }
     drawTextCentered(g, 'c 1981 NULLSTAR MFG CO', cx, 262, PAL.peach);
     return;
@@ -3315,7 +3502,7 @@ function drawHunterHi(ctx, ox, oy, h, idx) {
   const S = scale;
   const x = h.x * S + ox, y = (h.y + HUD_TOP * TILE) * S + oy;
   const eyesOnly = h.state === 'eyes' || h.state === 'enteringDen';
-  const fright = game.frightT > 0 && !eyesOnly
+  const fright = game.frightT > 0 && !eyesOnly && !h.frightImmune
     && h.state !== 'idle' && h.state !== 'respawn'
     && h.state !== 'exitingDen' && h.state !== 'exiting';
   const frightFlash = fright && game.frightT < 120 && ((game.frightT / 12 | 0) % 2 === 0);
@@ -3922,11 +4109,15 @@ function helpFigure(ctx, kind, cx, cy, S) {
   ctx.restore();
 }
 
+/* `at`/`bt` are the same instruction in the finger idiom. A manual that
+   tells a phone player to right-click is worse than no manual. */
 const HELP_ROWS = [
-  { fig: 'click',  a: 'CLICK ANYWHERE FREEZES TIME',       b: 'CLICK EMPTY MAZE TO RESUME' },
+  { fig: 'click',  a: 'CLICK ANYWHERE FREEZES TIME',       b: 'CLICK EMPTY MAZE TO RESUME',
+                   at: 'TAP ANYWHERE FREEZES TIME',        bt: 'TAP EMPTY MAZE TO RESUME' },
   { fig: 'drag',   a: 'DRAG A GHOST TO DRAW ITS PATH',     b: 'IT WALKS EXACTLY WHAT YOU DREW' },
   { fig: 'beads',  a: 'BEADS MARK EQUAL TRAVEL TIME',      b: 'WHITE BEADS = A SYNCED PINCER' },
-  { fig: 'loop',   a: 'CLOSE THE LOOP FOR AN ENDLESS PATROL', b: 'CLICK AN ARROWHEAD TO KEEP DRAWING' },
+  { fig: 'loop',   a: 'CLOSE THE LOOP FOR AN ENDLESS PATROL', b: 'CLICK AN ARROWHEAD TO KEEP DRAWING',
+                   bt: 'TAP AN ARROWHEAD TO KEEP DRAWING' },
   { fig: 'camp',   a: 'OFF THE END IT COASTS TO A WALL',   b: 'CAMP LIMIT SETS HOW LONG IT WAITS' },
   { fig: 'fright', a: 'ENERGIZERS TURN YOUR SQUAD BLUE',   b: 'BLUE GHOSTS CAN BE EATEN' },
   { fig: 'score',  a: 'SCORE = DOTS LEFT x LEVEL',         b: 'CATCH HIM FAST, BANK MORE' },
@@ -4017,14 +4208,16 @@ function drawHelpLayer(ctx) {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     const textW = pw - S * 42;
-    helpText(ctx, row.a, px + S * 37, cy - S * 2.6,
+    helpText(ctx, (touchMode && row.at) || row.a, px + S * 37, cy - S * 2.6,
       Math.max(S * 3.8, 12), textW, 'bold ', '#ffffff');
-    helpText(ctx, row.b, px + S * 37, cy + S * 2.8,
+    helpText(ctx, (touchMode && row.bt) || row.b, px + S * 37, cy + S * 2.8,
       Math.max(S * 3.5, 11), textW, '', '#8fa0c0');
   });
 
   ctx.textAlign = 'center';
-  helpText(ctx, 'SPACE FREEZE   1-4 SELECT   RIGHT-DRAG ERASE   M MUTE',
+  helpText(ctx, touchMode
+      ? 'TAP FREEZE   ROSTER SELECTS   DRAG BACK TO UNDO'
+      : 'SPACE FREEZE   1-4 SELECT   RIGHT-DRAG ERASE   M MUTE',
     px + pw / 2, py + ph - S * 5, Math.max(S * 3.2, 10), pw - S * 8, '', '#8fa0c0');
 
   ctx.restore();

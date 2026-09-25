@@ -38,6 +38,35 @@ You cannot steer a ghost directly. You freeze time and **draw** where it walks.
 There is deliberately no "clear order" gesture: drawing a new order *is* the
 clear, so no click can ever silently disarm a ghost.
 
+### On a phone
+
+One finger does everything in the table above — tap where it says click, drag
+where it says drag. The whole game was already mouse-only by design, so
+nothing had to be invented for touch and nothing is hidden behind a gesture
+you have to be told about.
+
+Four deliberate differences, all because a fingertip is not a cursor:
+
+- **A tap resumes on release, not on contact.** Restarting the clock is the
+  one move you cannot take back. A thumb that lands and then slides has
+  changed its mind, and the game stays frozen.
+- **A tap is judged by time as well as distance.** A finger rolls further
+  than any drag threshold you would dare set, so a press that lands and
+  lifts inside a quarter second is a tap whatever the thumb did in between —
+  and it browses the pile from where it *landed*, not where it lifted.
+- **Ghosts and arrowheads are finger-sized targets.** The pick reach widens
+  under a finger, and the error that buys is the safe one: a near-miss
+  selects a ghost instead of falling through to the tap that means "go".
+- **Pressing against the screen edge draws through the tunnel.** A mouse
+  sails off the canvas to ask for the wrap tile; a finger hits glass. On a
+  tunnel row, a pointer parked in the outermost strip of the playfield
+  targets the far mouth and the tip walks the tunnel.
+
+There is no finger equivalent of right-drag erase, on purpose: multi-touch
+would be the most fragile thing on the phone in exchange for an edit that
+redrawing already covers. The manual and the attract screen re-word
+themselves when they see a finger.
+
 **The camp limit is yours to set.** A ghost that runs off the end of its path
 coasts on its last heading until a wall stops it dead — and then it may stand
 there, legally camping, for as long as your **CAMP LIMIT** allows (the chip

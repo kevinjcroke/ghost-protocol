@@ -16,12 +16,20 @@ function stubCtx() {
     set(t, k, v) { t[k] = v; return true; },
   });
 }
+/* Listeners are recorded rather than dropped so input can be tested the way
+   a player produces it -- real events through the real handlers -- instead
+   of by reaching past the binding and calling internals directly. */
 function stubCanvas() {
   const c = { width: 0, height: 0, style: {}, getContext: () => stubCtx(),
-    toDataURL: () => 'data:image/png;base64,', addEventListener: () => {},
+    toDataURL: () => 'data:image/png;base64,',
+    listeners: {},
+    addEventListener: (type, fn) => { (c.listeners[type] || (c.listeners[type] = [])).push(fn); },
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 224, height: 288 }) };
   return c;
 }
+
+// one screen for the whole run, so tests and game.js address the same canvas
+const screen = stubCanvas();
 
 const sandbox = {
   console,
@@ -29,10 +37,16 @@ const sandbox = {
   Int16Array, Float32Array, Error, isNaN, parseInt, parseFloat, Infinity, NaN,
   document: {
     createElement: (t) => (t === 'canvas' ? stubCanvas() : { style: {} }),
-    getElementById: () => stubCanvas(),
+    getElementById: () => screen,
     addEventListener: () => {},
   },
-  window: { addEventListener: () => {}, innerWidth: 900, innerHeight: 1000 },
+  window: {
+    listeners: {},
+    addEventListener(type, fn) { (this.listeners[type] || (this.listeners[type] = [])).push(fn); },
+    innerWidth: 900, innerHeight: 1000,
+  },
+  navigator: { maxTouchPoints: 0 },
+  setTimeout: (fn) => { fn(); return 0; },
   localStorage: { getItem: () => '0', setItem: () => {} },
   requestAnimationFrame: () => 0,
   performance: { now: () => 0 },
@@ -50,8 +64,38 @@ const src = fs.readFileSync(require('path').join(__dirname, '..', 'game.js'), 'u
        BOARDS, setBoard, boardForLevel,
        get TUNNEL_ROWS() { return TUNNEL_ROWS; },
        resumeFromCommand, stalledHunter, startDemo, openHelp, closeHelp, render, Sound,
+       rosterUI, helpUI, input, HELP_ROWS,
        get dots() { return dots; },
        get dotTotal() { return dotTotal; },
+       get touchMode() { return touchMode; },
+       setTouchMode(v) { touchMode = v; },
+       get scale() { return scale; },
      };`;
 vm.runInContext(src, sandbox, { filename: 'game.js' });
+
+/* Send an event the way a browser would: to everything bound for that type,
+   on that target. `fire` returns nothing -- tests read the game state after,
+   which is the only thing a player can observe either. */
+function fire(target, type, ev) {
+  const fns = (target.listeners && target.listeners[type]) || [];
+  for (const fn of fns) fn(ev);
+}
+sandbox.__api.fire = fire;
+sandbox.__api.screen = screen;
+sandbox.__api.win = sandbox.window;
+
+/* Touches, assembled the way a TouchEvent carries them: `touches` is every
+   finger still on the glass, `changedTouches` only the ones this event is
+   about. Getting that split wrong is exactly the bug these tests exist to
+   catch, so the helper does not paper over it. */
+function touch(id, x, y) {
+  return { identifier: id, clientX: x, clientY: y };
+}
+sandbox.__api.touch = touch;
+sandbox.__api.touchEvent = (type, touches, changed) => ({
+  type, touches, changedTouches: changed || touches,
+  cancelable: true, defaultPrevented: false,
+  preventDefault() { this.defaultPrevented = true; },
+});
+
 module.exports = sandbox.__api;
