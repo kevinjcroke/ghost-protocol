@@ -9,23 +9,36 @@ function measure(level, setup, ticks) {
   game.startLevel(true);
   for (let i = 0; i < 240; i++) game.update();   // clear READY
   game.phase = 'play';
+  /* No camp limit for the run. The harness's is 0S, so the first released
+     ghost to wall-stop went overdue on its first parked tick, froze the
+     game, and the break below ended a "10 second" window about two
+     seconds in. Parked ghosts are fine here; only the one ghost we time
+     has to keep moving, and keepMoving sees to that. */
+  const limit = game.campLimit;
+  game.campLimit = null;
   setup();
   const h = game.hunters.find(x => x.state === 'active') || game.hunters[0];
   h.state = 'active';
   const ev = game.evader;
-  let hDist = 0, eDist = 0;
+  let hDist = 0, eDist = 0, ran = 0;
   let hp = { x: h.x, y: h.y }, ep = { x: ev.x, y: ev.y };
   for (let i = 0; i < ticks; i++) {
-    if (game.phase === 'command') game.phase = 'play';   // ghosts-don't-camp gate
+    if (game.phase === 'command') game.phase = 'play';   // a route run dry still asks
+    API.releaseDen();   // the den only opens on orders: draw the others out
     game.update();
-    if (game.phase !== 'play') break;
+    if (game.phase === 'command') game.phase = 'play';
+    if (game.phase !== 'play') break;                    // capture, escape: the run is over
+    ran++;
     const hd = Math.abs(h.x - hp.x) + Math.abs(h.y - hp.y);
     const ed = Math.abs(ev.x - ep.x) + Math.abs(ev.y - ep.y);
     if (hd < 5) hDist += hd;      // ignore tunnel-wrap jumps
     if (ed < 5) eDist += ed;
     hp = { x: h.x, y: h.y }; ep = { x: ev.x, y: ev.y };
   }
-  return { hunter: hDist / 8, evader: eDist / 8, ratio: eDist / Math.max(hDist, 0.001) };
+  game.campLimit = limit;
+  // per `ticks`, whatever length the run actually got to, and that length shown
+  const k = ticks / Math.max(ran, 1);
+  return { hunter: hDist / 8 * k, evader: eDist / 8 * k, ratio: eDist / Math.max(hDist, 0.001), ran };
 }
 
 /* Keep a hunter permanently under orders so it never stalls on a wall, or it
@@ -47,11 +60,12 @@ function keepMoving() {
 }
 
 console.log('tiles covered per 600 ticks (10 seconds)\n');
-console.log('level   hunter   evader   ratio');
+console.log('level   hunter   evader   ratio   ticks measured');
 for (const L of [1, 2, 4, 8, 12, 20]) {
   const r = measure(L, keepMoving, 600);
   console.log(String(L).padStart(5) + r.hunter.toFixed(1).padStart(9)
-    + r.evader.toFixed(1).padStart(9) + r.ratio.toFixed(2).padStart(8));
+    + r.evader.toFixed(1).padStart(9) + r.ratio.toFixed(2).padStart(8)
+    + String(r.ran).padStart(10));
 }
 
 console.log('\nconfigured speeds (px per tick):');

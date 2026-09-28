@@ -953,6 +953,21 @@ const Sound = {
   energize() { this.blip(90, 400, 0.4, 'sawtooth', 0.14); },
   frightPulse(step) { this.blip(step % 2 ? 210 : 260, step % 2 ? 150 : 200, 0.09, 'sawtooth', 0.05); },
   eyesPulse(step) { this.blip(step % 2 ? 750 : 950, step % 2 ? 950 : 750, 0.06, 'sine', 0.06); },
+  /* A ghost in the den has its body back and can go. Two soft rising
+     notes, well under the siren: a cue, not an alarm -- the game does not
+     stop for it. */
+  denReady() {
+    this.blip(520, 520, 0.05, 'triangle', 0.05);
+    this.blip(780, 780, 0.07, 'triangle', 0.05, this.ctx && this.ctx.currentTime + 0.06);
+  },
+  /* Sent home, a ghost goes through the door with a short low clunk: a
+     latch, not a death. The eaten go in silently -- their eyes have been
+     pulsing all the way home, and that already says who they are. */
+  denDoor() {
+    const t = this.ctx && this.ctx.currentTime;
+    this.blip(170, 60, 0.08, 'square', 0.09, t);
+    this.noiseBurst(0.035, 0.07, t && t + 0.004);
+  },
   hunterLost() {  // our ghost dissolves — the reversed death spiral
     if (!this.ctx || this.quiet()) return;
     const t = this.ctx.currentTime;
@@ -1095,6 +1110,13 @@ function stepEntity(e, decide) {
 /* ------------------------------- hunters -------------------------------- */
 
 const EYE_TARGET = { c: 13, r: DEN_EXIT_ROW };
+/* Where each slot sits in the den, px x on the tcy(14) row. Four bodies
+   cannot fit six tiles without touching, so they share the width evenly
+   -- a couple of px of overlap, never a whole ghost hidden behind
+   another, because the den is now a place the player reads: who is still
+   eyes, who is charged and waiting. RAZE only ever sits here after it
+   has been home. */
+const DEN_SEATS = [106, 94, 118, 130];
 const BOOST_SPEED = 1.22;       // prize overdrive, as a multiple of hunting speed
 const BOOST_TICKS = 480;        // and how long it lasts: 8 seconds
 /* The slow stretch of a tunnel row: the mouths and the wrap zone beyond. */
@@ -1108,19 +1130,19 @@ class Hunter {
     this.key = def.key;
     this.color = def.color;
     this.slot = slot;           // 0 starts outside, 1..3 in den
+    this.seatX = DEN_SEATS[slot];
     this.reset();
   }
   reset() {
     this.state = this.slot === 0 ? 'active' : 'idle';
+    this.bob = this.slot * 20;
     this.dir = this.slot === 0 ? 'left' : null;
     if (this.slot === 0) {
       this.x = DEN_EXIT_X; this.y = tcy(DEN_EXIT_ROW);
       this.script = [{ x: DEN_EXIT_X - 4, y: tcy(DEN_EXIT_ROW) }];
       this.state = 'exiting'; this.exitHeading = 'left';
     } else {
-      const xs = [0, 94, 112, 130];
-      this.x = xs[this.slot]; this.y = tcy(14);
-      this.bob = this.slot * 20;
+      this.x = this.seatX; this.y = tcy(14);
     }
     this.path = null;           // {tiles:[{c,r}], closed, idx}
     this.speed = 0;
@@ -1130,17 +1152,40 @@ class Hunter {
     this.needsOrders = false;
     this.campT = 0;
     this.overdue = false;
-    this.releaseT = 10 + this.slot * 30;    // rapid-fire den release: seconds, not a queue
-    this.releaseFrom = this.releaseT;        // the wait it started with, for the glass
+    this.eaten = false;         // struck, and not yet whole again: see isEyes
+    this.readyAt = -1;          // game.tick it last got its body back in the den
     this.dissolveT = -1;
     this.frightImmune = false;  // set on every den exit; only a fresh energizer clears it
+    /* RAZE's walk out at the start of a life: the one trip out of the den
+       nobody ordered. Spent the moment it lands on the board. */
+    this.opening = this.slot === 0;
+    this.turnedBack = false;    // going back to its seat, never having left
   }
   tile() { return tileOfPx(this.x, this.y); }
   isThreat() { return this.state === 'active'; }
-  /* A hunter waiting in the den can still be given orders -- it just starts
-     walking them when it gets out. Refusing the click reads as a dead
-     control, and the player has nothing else to do while it waits. */
+  /* A hunter waiting in the den can still be given orders -- a route is
+     the only thing that lets it out, and one drawn while it is still eyes
+     waits with it. Refusing the click reads as a dead control. */
   isCommandable() { return this.state !== 'dissolving' && this.state !== 'eyes'; }
+  /* Bare eyes, no body: walking home after he ate it, going in, and the
+     whole respawn wait in the den ('respawn' is only ever reached eaten).
+     A ghost sent home on orders goes in through the same enteringDen with
+     its body on, so for that one state it is the flag that decides. */
+  isEyes() {
+    return this.state === 'eyes' || this.state === 'respawn'
+        || (this.state === 'enteringDen' && this.eaten);
+  }
+  /* Sitting in the den, whole, charged and waiting for a route out. */
+  isReady() { return this.state === 'idle'; }
+  /* Which way it looks, for drawing only. In the den the eyes do the
+     telling: a ghost that can go watches the door above it, and eyes
+     sitting out the wait look at the floor. update() never reads this;
+     it steers by dir. */
+  face() {
+    if (this.state === 'idle') return 'up';
+    if (this.state === 'respawn') return 'down';
+    return this.dir || 'left';
+  }
   inDenStates() {
     return this.state === 'idle' || this.state === 'respawn'
         || this.state === 'enteringDen' || this.state === 'exitingDen'
@@ -1152,6 +1197,10 @@ class Hunter {
     this.campT = 0;
     this.overdue = false;
     this.path = { tiles: tiles.slice(), closed, idx: 0 };
+    /* A route that ends on the den door is a trip home. Read off the tiles
+       rather than passed in, so every author of an order agrees on it. */
+    const last = tiles[tiles.length - 1];
+    this.path.home = !closed && !!last && isDoor(last.c, last.r);
     // if the first tile is where we already are, aim at the next one
     const t = this.tile();
     if (this.path.tiles.length && this.path.tiles[0].c === t.c && this.path.tiles[0].r === t.r) {
@@ -1203,11 +1252,26 @@ class Hunter {
     this.animT++;
     if (this.animT % 8 === 0) this.frame ^= 1;
 
+    /* The den lets nobody out on a timer. A ghost in here leaves when it
+       has a route and not before: the route IS the release. Waiting is
+       legal for as long as the player likes -- a charged ghost held
+       inside is an ambush -- so nothing here counts toward the camp
+       limit, and nothing on the board treats it as a statue. */
     if (this.state === 'idle') {
       this.bob++;
       this.y = tcy(14) + Math.round(Math.sin(this.bob / 12) * 2);
-      if (this.releaseT > 0) this.releaseT--;
-      else this.beginExit();
+      if (this.path) this.beginExit();
+      return;
+    }
+    /* The route is the release all the way out, not just at the first
+       step. Erased while the ghost is still on its way -- a freeze and a
+       right-drag can land in the half-second it takes -- it goes back to
+       its seat rather than out on a heading nobody drew. RAZE's opening
+       walk is the one exit that never needed a route. */
+    if ((this.state === 'exitingDen' || this.state === 'exiting')
+        && !this.path && !this.opening) {
+      this.state = 'enteringDen';
+      this.turnedBack = true;
       return;
     }
     if (this.state === 'exitingDen') {
@@ -1223,7 +1287,6 @@ class Hunter {
         if (this.y <= tcy(DEN_EXIT_ROW)) {
           this.y = tcy(DEN_EXIT_ROW);
           this.state = 'exiting';
-          this.exitHeading = (game.releaseFlip = !game.releaseFlip) ? 'left' : 'right';
         }
       }
       return;
@@ -1231,10 +1294,9 @@ class Hunter {
     if (this.state === 'exiting') {
       /* Slide off the door seam onto the grid. With an order queued, land
          exactly on the trail's anchor tile so the order survives the trip
-         out -- landing a tile away silently voided it. With no order, drift
-         to the side chute and head up it, so a respawned ghost visibly
-         rejoins the field instead of wall-stopping one tile from the door
-         and looking like it never left the box at all. */
+         out -- landing a tile away silently voided it. Without one this is
+         RAZE's opening: a step along the row toward its side and a coast,
+         the way every life has always begun. */
       const hasOrder = !!this.path;
       const targetC = hasOrder ? DOOR_C0 : (this.exitHeading === 'left' ? 12 : 15);
       const targetX = tcx(targetC);
@@ -1244,6 +1306,7 @@ class Hunter {
       else {
         this.x = targetX;
         this.state = 'active';
+        this.opening = false;
         /* Classic den rule: leaving the den always sheds the blue. A ghost
            eaten and walked home re-emerges as a hunter even if the fright
            clock is still running; only a fresh energizer re-blues it. */
@@ -1263,6 +1326,7 @@ class Hunter {
          on the doorstep. enteringDen re-centers both axes itself. */
       if (t.c === EYE_TARGET.c && t.r === EYE_TARGET.r) {
         this.state = 'enteringDen';
+        this.eaten = true;    // eyes go in as eyes, however they got here
         this.dir = null;
         return;
       }
@@ -1280,26 +1344,45 @@ class Hunter {
       return;
     }
     if (this.state === 'enteringDen') {
+      // onto the seam, down through the door, then along to its own seat
       const spd = 1.0;
-      if (Math.abs(this.x - DEN_EXIT_X) > spd) { this.x += Math.sign(DEN_EXIT_X - this.x) * spd; this.dir = this.x < DEN_EXIT_X ? 'right' : 'left'; }
-      else if (this.y < tcy(14)) { this.x = DEN_EXIT_X; this.y += spd; this.dir = 'down'; }
-      else {
-        this.y = tcy(14);
-        this.state = 'respawn';
-        this.respawnT = game.params.respawnTicks;
+      if (this.y < tcy(14)) {
+        if (Math.abs(this.x - DEN_EXIT_X) > spd) { this.x += Math.sign(DEN_EXIT_X - this.x) * spd; this.dir = this.x < DEN_EXIT_X ? 'right' : 'left'; }
+        else { this.x = DEN_EXIT_X; this.y = Math.min(tcy(14), this.y + spd); this.dir = 'down'; }
+      } else if (Math.abs(this.x - this.seatX) > spd) {
+        this.x += Math.sign(this.seatX - this.x) * spd;
+        this.dir = this.x < this.seatX ? 'right' : 'left';
+      } else {
+        this.x = this.seatX; this.y = tcy(14);
         this.bob = 0;
+        this.dir = null;
+        /* Eaten, it sits the respawn wait out as eyes. Sent home, it is
+           whole the moment it is in: the walk was the whole price. Turned
+           back on the way out, it never stopped being ready. */
+        if (this.eaten) {
+          this.state = 'respawn';
+          this.respawnT = game.params.respawnTicks;
+        } else this.becomeReady(game);
       }
       return;
     }
     if (this.state === 'respawn') {
       this.bob++;
       this.y = tcy(14) + Math.round(Math.sin(this.bob / 12) * 2);
-      if (--this.respawnT <= 0) this.beginExit();
+      if (--this.respawnT <= 0) this.becomeReady(game);
       return;
     }
     if (this.state !== 'active') return;
 
     // active
+    /* A route home hands off the moment the ghost reaches the doorstep
+       tile -- on arrival, as the eyes do, not at its centre -- and it is
+       in the den's hands from that tick: not food, not parked. Checked
+       before and after the step, so the tick a blue one arrives is already
+       the tick it is safe; a collision check that runs after the hunters
+       move can never catch it half-handed-off. A lethal one stays lethal
+       until it is through the door: see doorstepThreat. */
+    if (this.atDoorstep()) { this.goHome(); return; }
     if (this.boostT > 0) this.boostT--;
     /* The camp clock. Standing parked is legal up to the player's limit;
        past it, this ghost goes overdue: the game freezes and will not
@@ -1322,6 +1405,59 @@ class Hunter {
                : game.params.hunterSpeed;
     if (this.boostT > 0 && !fright) this.speed *= BOOST_SPEED;   // prize overdrive
     stepEntity(this, (e, ws) => this.decide(e, ws));
+    if (this.atDoorstep()) this.goHome();
+  }
+
+  /* On a route home, standing on the tile above the door with nothing
+     left to walk but the door itself. The door is always the last tile
+     and the doorstep the one before it: Draw builds them no other way. */
+  atDoorstep() {
+    const p = this.path;
+    if (!p || !p.home) return false;
+    const n = p.tiles.length, step = p.tiles[n - 2];
+    if (!step || p.idx < n - 2) return false;
+    const t = this.tile();
+    return t.c === step.c && t.r === step.r;
+  }
+  /* Going in on orders, whole and not blue, and still on the doorstep row:
+     the slide along to the seam happens out on the board, where he can
+     walk into it. Protecting a blue ghost from the arrival tick is the
+     point of the hand-off; letting a hunting one pass through him on the
+     doorstep would break touch = capture for one tile of the maze, and
+     a route a tile longer would have caught him. Once it starts down
+     through the door it is inside, where he cannot follow. */
+  doorstepThreat(game) {
+    return this.state === 'enteringDen' && !this.eaten && !this.turnedBack
+        && this.tile().r <= DEN_EXIT_ROW && !(game.frightT > 0 && !this.frightImmune);
+  }
+  /* Arriving home on orders. Its route is spent -- reaching the door is
+     the order completed, not an order run dry, so nothing asks for more
+     and no coast follows. Overdrive does not bank in here: the den
+     recharges a ghost's bite, not the prize. */
+  goHome() {
+    this.state = 'enteringDen';
+    Sound.denDoor();
+    this.path = null;
+    this.dir = null;
+    this.boostT = 0;
+    this.campT = 0;
+    this.overdue = false;
+    this.needsOrders = false;
+  }
+  /* Whole again, in the den, and free to leave the moment it has a route
+     -- including one drawn while it was still eyes, which goes now. */
+  becomeReady(game) {
+    this.state = 'idle';
+    this.eaten = false;
+    this.bob = 0;
+    /* The chime says a ghost has come back into charge. One that only
+       went back to its seat was charged all along, so it sits down quiet. */
+    if (!this.turnedBack) {
+      this.readyAt = game.tick;
+      Sound.denReady();
+    }
+    this.turnedBack = false;
+    if (this.path) this.beginExit();
   }
 
   beginExit() {
@@ -1330,11 +1466,41 @@ class Hunter {
     // any order queued while it waited survives the trip out
   }
 
+  /* Ticks until this ghost is out on the row above the door and hunting,
+     if it left at the first chance: worked out from the den choreography
+     in update() -- same speeds, same legs, right to a tick or two -- not
+     guessed. A ghost still going in counts the rest of the way in too.
+     -1 for anything that is not a whole ghost in the den: out on the
+     board, or eyes, which cannot leave before the wait is over whatever
+     is drawn for them. The evader's respect for the door is built on it. */
+  emergeTicks() {
+    const s = this.state;
+    if (s === 'active' || this.isEyes()) return -1;
+    // only RAZE's opening walk ever lands anywhere but the anchor tile
+    const land = !this.path && this.opening
+      ? tcx(this.exitHeading === 'left' ? 12 : 15) : tcx(DOOR_C0);
+    const slide = (x) => Math.ceil(Math.abs(land - x) / 1.2);
+    const out = (x, y) => Math.ceil(Math.abs(DEN_EXIT_X - x) / 1.2)
+      + Math.ceil((y - tcy(DEN_EXIT_ROW)) / 1.2) + slide(DEN_EXIT_X);
+    if (s === 'exiting') return slide(this.x);
+    if (s === 'exitingDen') return out(this.x, this.y);
+    if (s === 'idle') return out(this.x, this.y);
+    if (s === 'enteringDen') {
+      const inside = this.y < tcy(14)
+        ? Math.abs(DEN_EXIT_X - this.x) + (tcy(14) - this.y) + Math.abs(this.seatX - DEN_EXIT_X)
+        : Math.abs(this.seatX - this.x);
+      return Math.ceil(inside) + out(this.seatX, tcy(14));
+    }
+    return -1;
+  }
+
   /* struck while frightened */
   dissolve() {
     this.state = 'dissolving';
     this.dissolveT = 0;
     this.path = null;
+    this.eaten = true;
+    this.boostT = 0;      // the den never banks overdrive, eaten or sent
   }
 
   draw(g, game) {
@@ -1345,13 +1511,12 @@ class Hunter {
       g.drawImage(SPRITES.dissolve[this.key][f], x, y);
       return;
     }
-    if (this.state === 'eyes' || this.state === 'enteringDen') {
-      g.drawImage(bank.eyes[this.dir || 'left'], x, y);
+    if (this.isEyes()) {
+      g.drawImage(bank.eyes[this.face()], x, y);
       return;
     }
-    const fright = game.frightT > 0 && !this.frightImmune
-                   && this.state !== 'idle' && this.state !== 'respawn'
-                   && this.state !== 'exitingDen' && this.state !== 'exiting';
+    // only a ghost out on the board is ever blue; the den keeps its colour
+    const fright = game.frightT > 0 && !this.frightImmune && this.state === 'active';
     if (fright) {
       const flashing = game.frightT < 120 && ((game.frightT / 12 | 0) % 2 === 0);
       const arr = flashing ? bank.frightFlash : bank.fright;
@@ -1360,7 +1525,7 @@ class Hunter {
       // supercharged: rapid flash between its own colour and white-hot
       g.drawImage(bank.boost[this.dir || 'left'][this.frame], x, y);
     } else {
-      g.drawImage(bank.normal[this.dir || 'left'][this.frame], x, y);
+      g.drawImage(bank.normal[this.face()][this.frame], x, y);
     }
   }
 }
@@ -1377,11 +1542,13 @@ function neighborsOf(c, r) {
   }
   return out;
 }
-/* distance grid from a start tile (through corridors, den excluded) */
+/* distance grid from a start tile (through corridors, den excluded). The
+   start may be a list: distance to the nearest of several is one flood,
+   not a min over floods (the den has two exit tiles). */
 function bfsDistFrom(start) {
   const dist = new Int16Array(COLS * MAZE_ROWS).fill(-1);
-  const q = [start];
-  dist[start.r * COLS + start.c] = 0;
+  const q = Array.isArray(start) ? start.slice() : [start];
+  for (const s of q) dist[s.r * COLS + s.c] = 0;
   let head = 0;
   while (head < q.length) {
     const cur = q[head++];
@@ -1507,7 +1674,7 @@ const Draw = {
   begin(hunter) {
     const t = hunter.tile();
     const anchor = this.anchorFor(hunter);
-    this.active = { hunter, tiles: [anchor], closable: false };
+    this.active = { hunter, tiles: [anchor], closable: false, home: false };
   },
 
   /* Pick up a committed route at its arrowhead and keep drawing. The trail
@@ -1518,7 +1685,8 @@ const Draw = {
     if (!p || p.closed || !p.tiles.length) return false;
     const remaining = p.tiles.slice(Math.max(0, p.idx - 1));
     if (!remaining.length) return false;
-    this.active = { hunter, tiles: remaining.map(t => ({ c: t.c, r: t.r })), closable: false };
+    this.active = { hunter, tiles: remaining.map(t => ({ c: t.c, r: t.r })), closable: false,
+                    home: !!p.home };
     return true;
   },
 
@@ -1558,13 +1726,17 @@ const Draw = {
      along the corridor it is in, the tip stops and waits at the last legal
      tile until the cursor comes somewhere it can follow. Routing around a
      wall on the player's behalf turns a fourteen-tile order into a
-     forty-tile horseshoe they never drew. */
+     forty-tile horseshoe they never drew.
+     The den door is the one wall a route may end on: from the doorstep
+     straight down onto either door tile, and that is the last step -- a
+     tip on the door can only retract. It is how a ghost is sent home. */
   extendToward(mc, mr) {
     const a = this.active;
     if (!a) return;
     let guard = 0;
     while (guard++ < 40) {
       const tip = a.tiles[a.tiles.length - 1];
+      const onDoor = isDoor(tip.c, tip.r);
       let dc = wrapCol(mc) - tip.c;
       if (dc > COLS / 2) dc -= COLS;
       if (dc < -COLS / 2) dc += COLS;
@@ -1580,9 +1752,16 @@ const Draw = {
       for (const s of order) {
         if (!s.x && !s.y) continue;
         const nc = wrapCol(tip.c + s.x), nr = tip.r + s.y;
-        if (!isOpen(nc, nr) || inDen(nc, nr)) continue;
         const prev = a.tiles.length >= 2 ? a.tiles[a.tiles.length - 2] : null;
-        if (prev && prev.c === nc && prev.r === nr) a.tiles.pop();  // retract
+        const back = !!prev && prev.c === nc && prev.r === nr;
+        if (onDoor && !back) continue;              // home is terminal
+        /* Stepping home from the doorstep. Not as a route's first step
+           for a ghost still in the den, though: out and straight back in
+           is no order at all, and would spend its den exit on nothing. */
+        const home = isDoor(nc, nr) && s.y === 1 && tip.r === DEN_EXIT_ROW
+          && !(a.tiles.length === 1 && a.hunter.inDenStates());
+        if (!home && (!isOpen(nc, nr) || inDen(nc, nr))) continue;
+        if (back) a.tiles.pop();                    // retract
         else a.tiles.push({ c: nc, r: nr });
         stepped = true;
         break;
@@ -1590,7 +1769,9 @@ const Draw = {
       if (!stepped) break;            // hemmed in: the tip waits
     }
     const tip = a.tiles[a.tiles.length - 1];
-    a.closable = a.tiles.length >= 5
+    a.home = isDoor(tip.c, tip.r);
+    // a route home ends inside the den, so it can never be a patrol
+    a.closable = !a.home && a.tiles.length >= 5
       && tip.c === a.tiles[0].c && tip.r === a.tiles[0].r;
   },
 
@@ -1645,6 +1826,7 @@ const Draw = {
     if (i <= h.path.idx || i < 1) { h.clearOrder(); Sound.uiClear(); return; }
     h.path.tiles = h.path.tiles.slice(0, i);
     h.path.closed = false;
+    h.path.home = false;     // whatever was cut, the door was the last tile
   },
   endErase() { this.erase = null; },
 };
@@ -1675,6 +1857,7 @@ function pointAlong(tiles, dist) {
 function runOutFrom(tiles) {
   if (tiles.length < 2) return [];
   const tip = tiles[tiles.length - 1], back = tiles[tiles.length - 2];
+  if (isDoor(tip.c, tip.r)) return [];   // a route home ends in the den: no coast
   let dc = tip.c - back.c, dr = tip.r - back.r;
   if (dc > 1) dc = -1; if (dc < -1) dc = 1;
   if (!dc && !dr) return [];
@@ -1707,8 +1890,9 @@ function driftTiles(tile, dir) {
    mouths slow it, overdrive lifts it until boostT runs out, fright drags
    it until frightT does. The glass prints this as a promise, so it is
    worked out the way the machine will do it, not from a flat rate. */
-function orderTicks(h, tiles, from, lap) {
+function orderTicks(h, tiles, from, lap, short) {
   const P = game.params;
+  const cut = short || 0;   // px shy of the last tile's centre where the walk ends
   const boostEnd = h.boostT;
   const frightEnd = h.frightImmune ? 0 : game.frightT;
   let t = 0;
@@ -1726,10 +1910,11 @@ function orderTicks(h, tiles, from, lap) {
   };
   // half of each step is spent in the tile it leaves, half in the next;
   // a step across the seam runs the whole wrap zone, two tiles, all tunnel
-  const step = (a, b) => {
-    if (Math.abs(b.c - a.c) > 1) { walk(TILE * 2, true); return; }
+  const step = (a, b, end) => {
+    const off = end ? cut : 0;
+    if (Math.abs(b.c - a.c) > 1) { walk(TILE * 2 - off, true); return; }
     walk(TILE / 2, inTunnelAt(a.c, a.r));
-    walk(TILE / 2, inTunnelAt(b.c, b.r));
+    walk(TILE / 2 - off, inTunnelAt(b.c, b.r));
   };
   const n = tiles.length;
   if (lap) {
@@ -1754,8 +1939,8 @@ function orderTicks(h, tiles, from, lap) {
     else if (gx < -NATIVE_W / 2) gx += NATIVE_W + TILE;
     if (ahead > 1e-6 && gx * d.x + (tcy(goal.r) - h.y) * d.y < 0) {
       walk(ahead, inTunnelAt(here.c, here.r));
-      step(here, goal);
-      for (let i = from + 1; i < n; i++) step(tiles[i - 1], tiles[i]);
+      step(here, goal, from === n - 1);
+      for (let i = from + 1; i < n; i++) step(tiles[i - 1], tiles[i], i === n - 1);
       return t;
     }
   }
@@ -1763,10 +1948,23 @@ function orderTicks(h, tiles, from, lap) {
   if (dx > NATIVE_W / 2) dx = NATIVE_W + TILE - dx;
   const len = dx + Math.abs(tcy(goal.r) - h.y);
   const inHere = Math.max(0, len - TILE / 2);
-  walk(inHere, inTunnelAt(here.c, here.r));
-  walk(len - inHere, inTunnelAt(goal.c, goal.r));
-  for (let i = from + 1; i < n; i++) step(tiles[i - 1], tiles[i]);
+  const whole = from === n - 1 ? Math.max(0, len - cut) : len;
+  walk(Math.min(inHere, whole), inTunnelAt(here.c, here.r));
+  walk(whole - Math.min(inHere, whole), inTunnelAt(goal.c, goal.r));
+  for (let i = from + 1; i < n; i++) step(tiles[i - 1], tiles[i], i === n - 1);
   return t;
+}
+
+/* How long an open order takes to be done. For a route home that is the
+   doorstep, not the door the line is drawn to: the ghost hands itself to
+   the den on arriving there, half a tile shy of the centre, and from that
+   tick it is no longer walking anything you can time. */
+function routeTicks(h, tiles, from) {
+  const n = tiles.length;
+  if (n >= 2 && isDoor(tiles[n - 1].c, tiles[n - 1].r)) {
+    return from >= n - 1 ? 0 : orderTicks(h, tiles.slice(0, -1), from, false, TILE / 2);
+  }
+  return orderTicks(h, tiles, from, false);
 }
 
 /* draw one trail (committed or in-progress) */
@@ -1819,8 +2017,21 @@ function drawTrail(g, tiles, color, opts) {
     g.fillRect(tcx(s0.c) - 3, tcy(s0.r) - 3 + yOff, 1, 6);
     g.fillRect(tcx(s0.c) + 2, tcy(s0.r) - 3 + yOff, 1, 6);
   }
+  /* A route home does not point anywhere past the door; it ends in the
+     den. So its tip is a cup, not an arrowhead: two posts and a floor
+     standing on the door tile, open at the top where the line comes in. */
+  const homeTip = !closed && tiles.length >= 2
+    && isDoor(tiles[tiles.length - 1].c, tiles[tiles.length - 1].r);
+  if (homeTip) {
+    const tip = tiles[tiles.length - 1];
+    const tx = tcx(tip.c), ty = tcy(tip.r) + yOff;
+    g.fillStyle = color;
+    g.fillRect(tx - 3, ty - 2, 1, 4);
+    g.fillRect(tx + 3, ty - 2, 1, 4);
+    g.fillRect(tx - 3, ty + 2, 7, 1);
+  }
   // arrowhead at the tip pointing along the final segment
-  if (!closed && tiles.length >= 2) {
+  if (!closed && !homeTip && tiles.length >= 2) {
     const tip = tiles[tiles.length - 1], back = tiles[tiles.length - 2];
     let dc = tip.c - back.c, dr = tip.r - back.r;
     if (dc > 1) dc = -1; if (dc < -1) dc = 1;
@@ -1857,6 +2068,14 @@ function drawTrail(g, tiles, color, opts) {
   }
 }
 
+/* The tiles a route's timing beads are laid along. A route home stops
+   being a hunter at the doorstep -- the ghost hands itself to the den on
+   arriving there -- so no bead, and no pincer, is promised past it. */
+function beadWalk(tiles) {
+  const n = tiles.length;
+  return n >= 2 && isDoor(tiles[n - 1].c, tiles[n - 1].r) ? tiles.slice(0, -1) : tiles;
+}
+
 /* which bead indices coincide (same travel time, near in space) across trails */
 function computeHotBeads(game) {
   const lists = [];
@@ -1866,7 +2085,7 @@ function computeHotBeads(game) {
               : null;
     if (!src || src.tiles.length < 2) { lists.push(null); continue; }
     const spacing = Math.max(2, game.params.hunterSpeed * BEAD_TICKS);
-    const walk = src.closed ? src.tiles.concat([src.tiles[0]]) : src.tiles;
+    const walk = src.closed ? src.tiles.concat([src.tiles[0]]) : beadWalk(src.tiles);
     const pts = [];
     for (let k = 1; k <= 40; k++) {
       const p = pointAlong(walk, k * spacing);
@@ -1909,15 +2128,40 @@ function hotBeadsNow() {
 
 const HORIZON = 110;   // ticks of hunter future we bother predicting
 
-/* Simulate a hunter's deterministic future; tile occupied at each tick. */
-function hunterFuture(h, game) {
+/* The walk in from wherever a ghost going home stands, as enteringDen
+   makes it -- a pixel a tick along to the seam, then down -- for as long
+   as it is still on the doorstep row: the part of a trip home that is
+   still out on the board (Hunter.doorstepThreat). One tile per tick. */
+function doorSlide(x, y) {
   const out = [];
-  if (!h.isThreat()) return out;
+  while (out.length < HORIZON) {
+    if (Math.abs(x - DEN_EXIT_X) > 1) x += Math.sign(DEN_EXIT_X - x);
+    else { x = DEN_EXIT_X; y += 1; }
+    const t = tileOfPx(x, y);
+    if (t.r > DEN_EXIT_ROW) break;
+    out.push(t.r * COLS + wrapCol(t.c));
+  }
+  return out;
+}
+
+/* Simulate a hunter's deterministic future; tile occupied at each tick.
+   With `emerge` it is a den ghost holding a drawn route: -1 (off the
+   board) until it is due out, then the route walked from the exit tile at
+   hunting pace -- it comes out immune, so never at the blue crawl. */
+function hunterFuture(h, game, emerge) {
+  const out = [];
+  const den = emerge !== undefined;
+  if (!h.isThreat() && !den) return out;
+  if (den) for (let t = 0; t < Math.min(emerge, HORIZON); t++) out.push(-1);
   const sim = {
-    x: h.x, y: h.y, dir: h.dir, speed: h.speed || game.params.hunterSpeed,
+    x: den ? tcx(DOOR_C0) : h.x, y: den ? tcy(DEN_EXIT_ROW) : h.y,
+    dir: den ? null : h.dir,
+    speed: den ? game.params.hunterSpeed : h.speed || game.params.hunterSpeed,
     path: h.path ? { tiles: h.path.tiles, closed: h.path.closed, idx: h.path.idx } : null,
     tile() { return tileOfPx(this.x, this.y); },
   };
+  // a route home leaves the board through the door; there is no future past it
+  const step = h.path && h.path.home ? h.path.tiles[h.path.tiles.length - 2] : null;
   const decide = (e) => {
     const t = sim.tile();
     if (sim.path) {
@@ -1950,10 +2194,16 @@ function hunterFuture(h, game) {
       if (!isOpen(t.c + d.x, t.r + d.y)) sim.dir = null;
     }
   };
-  for (let t = 0; t < HORIZON; t++) {
+  for (let t = out.length; t < HORIZON; t++) {
     stepEntity(sim, decide);
     const tt = sim.tile();
     out.push(tt.r * COLS + wrapCol(tt.c));
+    if (step && sim.path && sim.path.idx >= sim.path.tiles.length - 2
+        && tt.c === step.c && tt.r === step.r) {
+      // it hands off here, then walks the rest of the doorstep row going in
+      for (const k of doorSlide(sim.x, sim.y)) if (out.length < HORIZON) out.push(k);
+      break;
+    }
   }
   return out;
 }
@@ -2083,8 +2333,48 @@ class Evader {
   dangerAt(c, r, ticks, game, myTpt) {
     let worst = 1000;
     const idx = r * COLS + wrapCol(c);
+    const tt = Math.min(HORIZON - 1, Math.round(ticks));
+    /* Occupied on/near our arrival tick? The level-scaled horizon is how
+       deep he reads your DRAWN orders -- the mind-reading feel. But basic
+       reflexes are not a difficulty setting: half a second of "that
+       hunter is coming down this corridor" applies at every level, or a
+       lone chaser beats him at exactly the levels meant to be gentle. */
+    const foresee = (fut) => {
+      if (tt >= Math.max(30, game.params.horizon)) return;
+      for (let w = -3; w <= 3; w++) {
+        const k = tt + w;
+        if (k >= 0 && k < fut.length && fut[k] === idx) worst = Math.min(worst, Math.abs(w));
+      }
+    };
     for (let i = 0; i < game.hunters.length; i++) {
       const h = game.hunters[i];
+      const den = game.denWatch[i];
+      if (den) {
+        /* A whole ghost in the den. It comes out immune, so fright is no
+           excuse here -- that is the ambush. With a route drawn it is an
+           order like any other: he reads it, and he respects how fast it
+           could reach him once out (the same pursuit fallback as a hunter
+           on the board, started late). With no route it is only a charged
+           ghost that COULD be sent at him. During fright that possibility
+           is a threat his energizer does not cancel, so then, and only
+           then, he respects it -- as a fact about distance to the
+           door: like a statue, it does not advance while he walks, so it
+           guards the corridor outside the door without turning the far
+           board into a no-go.
+           The slack is his naivety: wide on the early boards, where the
+           ambush is the lesson, and gone by the seventh. What he never
+           gets is a guess at a route you have not drawn. */
+        const hd = game.doorDist ? game.doorDist[idx] : -1;
+        const out = hd * (TILE / game.params.hunterSpeed) + den.eta;
+        // a route out, or the walk in while it is still on the doorstep row
+        foresee(game.hunterFutures[i]);
+        if (den.committed) {
+          if (hd >= 0) worst = Math.min(worst, Math.max(0, out - ticks));
+        } else if (game.frightT > 0 && hd >= 0) {
+          worst = Math.min(worst, out + game.params.doorSlack);
+        }
+        continue;
+      }
       if (!h.isThreat()) continue;
       const parked = !h.path && !h.dir;
       // food right now -- unless it re-emerged from the den mid-fright
@@ -2115,21 +2405,7 @@ class Evader {
         }
         continue;
       }
-      const fut = game.hunterFutures[i];
-      const tt = Math.min(HORIZON - 1, Math.round(ticks));
-      /* Occupied on/near our arrival tick? The level-scaled horizon is how
-         deep he reads your DRAWN orders -- the mind-reading feel. But basic
-         reflexes are not a difficulty setting: half a second of "that
-         hunter is coming down this corridor" applies at every level, or a
-         lone chaser beats him at exactly the levels meant to be gentle. */
-      if (tt < Math.max(30, game.params.horizon)) {
-        for (let w = -3; w <= 3; w++) {
-          const k = tt + w;
-          if (k >= 0 && k < fut.length && fut[k] === idx) {
-            worst = Math.min(worst, Math.abs(w));
-          }
-        }
-      }
+      foresee(game.hunterFutures[i]);
       // static reachability margin as a fallback. Always assume the hunter's
       // healthy speed: planning around a frightened hunter's crawl is how the
       // post-fright whiplash caught him -- fright ends, the crawl doesn't.
@@ -2288,6 +2564,9 @@ function levelParams(n) {
     /* how many ticks of your committed orders he can read (precognition);
        a 30-tick reflex floor applies at every level regardless */
     horizon: n <= 1 ? 0 : n === 2 ? 55 : n === 3 ? 80 : HORIZON,
+    /* ticks of benefit of the doubt he gives a charged den ghost with no
+       route yet (see dangerAt): trusting on the first boards, none by L7 */
+    doorSlack: Math.max(0, 24 - 4 * (n - 1)),
   };
 }
 
@@ -2327,7 +2606,9 @@ const game = {
   campChoice: 3,
   foodDist: null,
   hunterDistGrids: [null, null, null, null],
-  releaseFlip: false,
+  denWatch: [null, null, null, null],   // {eta, committed} per whole den ghost
+  doorDist: null,                       // distance to the nearer exit tile
+  doorDistOf: null,                     // ...for this maze
   popups: [],           // {x, y, text, color, t}
   message: null,        // {text, color, t}
   attract: { page: 0, t: 0, introStep: 0 },
@@ -2465,6 +2746,10 @@ const game = {
 
   refreshThreatModel() {
     this.parkedTiles = new Set();
+    if (this.doorDistOf !== walls) {    // once per maze, not per tick
+      this.doorDist = bfsDistFrom([{ c: DOOR_C0, r: DEN_EXIT_ROW }, { c: DOOR_C1, r: DEN_EXIT_ROW }]);
+      this.doorDistOf = walls;
+    }
     for (let i = 0; i < this.hunters.length; i++) {
       const h = this.hunters[i];
       const t = h.tile();
@@ -2473,6 +2758,23 @@ const game = {
         r: Math.max(0, Math.min(MAZE_ROWS - 1, t.r)),
       });
       this.hunterFutures[i] = h.isThreat() ? hunterFuture(h, this) : [];
+      /* The den door. A whole ghost inside is a hunter on a delay: it can
+         be out and hunting in `eta` ticks, and it comes out immune. One
+         with a route drawn is a committed order and he reads the route
+         like any other (from the exit tile, after the delay); one without
+         is only a possibility, which dangerAt weighs during fright alone.
+         Eyes are not on the list at all -- nothing gets them out before
+         their wait is over. */
+      const eta = h.emergeTicks();
+      this.denWatch[i] = eta < 0 ? null : { eta, committed: !!h.path };
+      if (eta >= 0 && h.path) this.hunterFutures[i] = hunterFuture(h, this, eta);
+      /* Going in lethal, a ghost is still on the doorstep row for a few
+         ticks and still catches him there: he reads that walk like any
+         other, laid over whatever route out it has queued behind it. */
+      if (h.doorstepThreat(this)) {
+        const slide = doorSlide(h.x, h.y);
+        this.hunterFutures[i] = slide.concat(this.hunterFutures[i].slice(slide.length));
+      }
       /* A parked hunter is a wall that kills: the evader's routing has to
          treat its tile as impassable, not as a distant threat. Unless
          fright has made it food -- then the wall is dinner, and this hard
@@ -2490,7 +2792,8 @@ const game = {
   checkCollisions() {
     const et = this.evader.tile();
     for (const h of this.hunters) {
-      if (h.state !== 'active') continue;
+      // a lethal ghost going home is still out here until it is through the door
+      if (h.state !== 'active' && !h.doorstepThreat(this)) continue;
       const ht = h.tile();
       const dx = h.x - this.evader.x, dy = h.y - this.evader.y;
       const touching = (ht.c === et.c && ht.r === et.r) || (dx * dx + dy * dy < 36);
@@ -2523,7 +2826,7 @@ const game = {
     const et = this.evader.tile();
     const dirsSeen = new Set();
     for (const h of this.hunters) {
-      if (h.state !== 'active') continue;
+      if (h.state !== 'active' && h !== hunter) continue;   // the catcher may be on the doorstep
       const ht = h.tile();
       const dist = Math.abs(ht.c - et.c) + Math.abs(ht.r - et.r);
       if (dist <= 8) {
@@ -2674,7 +2977,16 @@ const game = {
     const ev = { c: wrapCol(et.c), r: et.r };
     const distEv = bfsDistFrom(ev);
     const dAt = (c, r) => { const d = distEv[r * COLS + wrapCol(c)]; return d < 0 ? 999 : d; };
-    const squad = this.hunters.filter(h => h.state === 'active');
+    /* The den releases nobody on its own, so the demo has to draw its
+       ghosts out the way a player would: routes from the door for the ones
+       waiting inside, eyes included -- theirs are kept until they can go. */
+    const denned = h => h.state === 'idle' || h.state === 'respawn';
+    const from = h => {
+      if (denned(h)) return { c: DOOR_C0, r: DEN_EXIT_ROW };
+      const t = h.tile();
+      return { c: wrapCol(t.c), r: t.r };
+    };
+    const squad = this.hunters.filter(h => h.state === 'active' || denned(h));
     if (!squad.length) return;
 
     // one candidate target per quadrant
@@ -2702,12 +3014,11 @@ const game = {
     // nearest hunter presses him directly; the rest take the cut-offs
     const claimed = new Set();
     const byDist = squad.slice().sort((a, b) => {
-      const ta = a.tile(), tb = b.tile();
+      const ta = from(a), tb = from(b);
       return dAt(ta.c, ta.r) - dAt(tb.c, tb.r);
     });
     byDist.forEach((h, k) => {
-      const t = h.tile();
-      const from = { c: wrapCol(t.c), r: t.r };
+      const at = from(h);
       let goal = null;
       if (!fright && k === 0) {
         goal = ev;
@@ -2715,14 +3026,14 @@ const game = {
         let bi = -1, bd = 1e9;
         targets.forEach((tg, i) => {
           if (claimed.has(i)) return;
-          const d = Math.abs(tg.c - from.c) + Math.abs(tg.r - from.r);
+          const d = Math.abs(tg.c - at.c) + Math.abs(tg.r - at.r);
           if (d < bd) { bd = d; bi = i; }
         });
         if (bi >= 0) { claimed.add(bi); goal = targets[bi]; }
         else if (!fright) goal = ev;
       }
       if (!goal) return;
-      const route = bfsRoute(from, goal);
+      const route = bfsRoute(at, goal);
       if (route && route.length > 1) h.setOrder(route, false);
     });
   },
@@ -3360,7 +3671,8 @@ function drawCommandOverlay(g) {
     // ring the commandable hunters; mark the parked-and-stupid ones
     if (h.isCommandable()) {
       const hx = Math.round(h.x), hy = Math.round(h.y) + yOff;
-      if (!h.path && !h.dir && blink) {
+      // a ghost waiting in the den is not camping: waiting there is legal
+      if (h.state === 'active' && !h.path && !h.dir && blink) {
         drawText(g, '!', hx - 4, hy - 16, PAL.white);
       }
       /* Brackets mark the SELECTED ghost only, and hold steady. When all
@@ -3691,7 +4003,11 @@ function syncShell() {
   const stalled = frozen ? stalledHunter() : null;
   const sel = frozen ? game.hunters[Draw.selected] : null;
   const verb = touchMode ? 'TAP' : 'CLICK';
+  /* Nothing leaves the den on its own any more, so holding a ghost that
+     is sitting in there says the one thing a new player cannot guess. */
+  const denSel = sel && !sel.path && (sel.state === 'idle' || sel.state === 'respawn');
   const line = stalled ? stalled.def.name + ' NEEDS ORDERS'
+    : denSel ? sel.def.name + ' WAITS IN THE DEN · DRAG IT OUT'
     : 'DRAG A GHOST · ' + verb + ' EMPTY MAZE TO RUN';
   const key = frozen + '|' + !!stalled + '|' + (sel ? sel.color : '') + '|' + line;
   if (key === shell.key) return;
@@ -4162,10 +4478,8 @@ function shadeMix(hex, k) {
 function drawHunterHi(ctx, ox, oy, h, idx) {
   const S = scale;
   const x = h.x * S + ox, y = (h.y + HUD_TOP * TILE) * S + oy;
-  const eyesOnly = h.state === 'eyes' || h.state === 'enteringDen';
-  const fright = game.frightT > 0 && !eyesOnly && !h.frightImmune
-    && h.state !== 'idle' && h.state !== 'respawn'
-    && h.state !== 'exitingDen' && h.state !== 'exiting';
+  const eyesOnly = h.isEyes();
+  const fright = game.frightT > 0 && !h.frightImmune && h.state === 'active';
   const frightFlash = fright && game.frightT < 120 && ((game.frightT / 12 | 0) % 2 === 0);
   const boosted = !fright && !eyesOnly && h.boostT > 0 && (uiFrame / 4 | 0) % 2 === 0;
   const body = fright ? (frightFlash ? PAL.frightW : PAL.fright)
@@ -4184,7 +4498,7 @@ function drawHunterHi(ctx, ox, oy, h, idx) {
   }
 
   ctx.scale(S * breathe, S * breathe);   // native px units from here down
-  const p = PUPIL_OFF[h.dir] || PUPIL_OFF.left;
+  const p = PUPIL_OFF[h.face()] || PUPIL_OFF.left;
 
   if (!eyesOnly) {
     // silhouette: dome over straight sides over the three-flame hem,
@@ -4248,6 +4562,36 @@ function drawHunterHi(ctx, ox, oy, h, idx) {
     }
   }
 
+  ctx.restore();
+  if (h.isReady()) readyMark(ctx, x, y - 9.6 * S, S, h.color);
+}
+
+/* Whole, in the den, and free to go the moment it has a route: a small
+   chevron over its head, pointing at the door. A mark, not a glow -- the
+   den is four ghosts wide and a halo would bleed into the neighbours, who
+   may be eyes still sitting out their wait. It rides a little, the one
+   thing in the den that says "any time you like". */
+function readyMark(ctx, x, y, S, color) {
+  const ride = reducedMotion() ? 0 : Math.sin(uiFrame * 0.12) * S * 0.35;
+  const w = S * 1.7, hgt = S * 1.1, cy = y - ride;
+  const trace = () => {
+    ctx.beginPath();
+    ctx.moveTo(x - w, cy + hgt / 2);
+    ctx.lineTo(x, cy - hgt / 2);
+    ctx.lineTo(x + w, cy + hgt / 2);
+  };
+  ctx.save();
+  const a = ctx.globalAlpha;   // the lifted cast's own fade
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = TOKENS.casing;
+  ctx.globalAlpha = a * 0.7;
+  ctx.lineWidth = Math.max(2, S * 0.9);
+  trace(); ctx.stroke();
+  ctx.globalAlpha = a;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1, S * 0.42);
+  trace(); ctx.stroke();
   ctx.restore();
 }
 
@@ -4400,8 +4744,8 @@ function drawContactShadows(ctx, ox, oy) {
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = a;
   game.hunters.forEach((h, i) => {
-    // bare eyes walking home have no body to cast one
-    if (h.state === 'dissolving' || h.state === 'eyes' || h.state === 'enteringDen') return;
+    // bare eyes, walking home or waiting in the den, have no body to cast one
+    if (h.state === 'dissolving' || h.isEyes()) return;
     const held = i === Draw.selected;
     put(held ? SHADOW.held : SHADOW.rest, h.x, h.y + SHADOW_DROP + (held ? SHADOW_LIFT : 0));
   });
@@ -4441,7 +4785,9 @@ function routeOrder(S, ox, oy) {
       tiles = closed ? h.path.tiles : h.path.tiles.slice(Math.max(0, h.path.idx - 1));
     }
     if (!tiles || tiles.length < 1) return null;
+    const last = tiles[tiles.length - 1];
     return { h, i, drawing, tiles, closed,
+      home: !closed && tiles.length >= 2 && isDoor(last.c, last.r),
       walk: closed ? tiles.concat([tiles[0]]) : tiles,
       runs: orderPathPoints(tiles, closed, S, ox, oy) };
   });
@@ -4481,6 +4827,42 @@ function drawTransmit(ctx, h, S, ox, oy, k, w) {
   const a = Math.min(1, (1 - k) / 0.4);   // full until it nears the end
   strokeRuns(ctx, runs, w * 3, h.color, 0.45 * a, null);
   strokeRuns(ctx, runs, w * 1.1, TOKENS.ink, 0.95 * a, null);
+}
+
+/* The end of a route home. An arrowhead promises a heading and, past it,
+   a coast; this route has neither -- it ends in the den. So it ends in a
+   small den: an open-topped box whose gap is the door the line runs in
+   through, with the ghost's own colour sitting inside it, whole. Frozen,
+   it goes down on a dark casing like the trails, so it holds up over the
+   pink door and the den wall it lands on; live, the casing goes with the
+   rest of the planning aids and the mark is as light as an arrowhead.
+   `p` is the door tile's centre. */
+function homeMark(ctx, p, S, color, bright, frozen) {
+  const u = S * 2.3, gap = u * 0.42;
+  const top = p.y - u * 0.35, bot = p.y + u * 1.05;
+  const trace = () => {
+    ctx.beginPath();
+    ctx.moveTo(p.x - gap, top); ctx.lineTo(p.x - u, top);
+    ctx.lineTo(p.x - u, bot); ctx.lineTo(p.x + u, bot);
+    ctx.lineTo(p.x + u, top); ctx.lineTo(p.x + gap, top);
+  };
+  ctx.save();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  if (frozen) {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 0.7;
+    ctx.strokeStyle = TOKENS.casing;
+    ctx.lineWidth = Math.max(2, S * 0.95);
+    trace(); ctx.stroke();
+  }
+  ctx.globalAlpha = bright;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1, S * 0.4);
+  trace(); ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(p.x, p.y + u * 0.45, u * 0.3, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
 }
 
 function drawOrderLayer(ctx, ox, oy) {
@@ -4540,7 +4922,7 @@ function drawOrderLayer(ctx, ox, oy) {
      after every casing, so a later route's dark edge can never swallow an
      earlier route's white pincer bead -- the one mark that says two
      ghosts will be in the same place at the same time. */
-  order.forEach(({ h, i, drawing, closed, walk, runs }) => {
+  order.forEach(({ h, i, drawing, closed, home, walk, runs }) => {
     // leading edge: a bright head that runs along the route
     if (frozen && runs.length) {
       const total = (walk.length - 1) * TILE;
@@ -4559,10 +4941,11 @@ function drawOrderLayer(ctx, ox, oy) {
       }
     }
 
-    // timing beads
+    // timing beads -- a route home's stop at the doorstep, where it does
     const hotSet = hot[i] && hot[i].hot;
+    const beadTiles = closed ? walk : beadWalk(walk);
     for (let k = 1; k <= 80; k++) {
-      const p = pointAlong(walk, k * spacing);
+      const p = pointAlong(beadTiles, k * spacing);
       if (!p) break;
       const bx = p.x * S + ox, by = (p.y + HUD_TOP * TILE) * S + oy;
       const isHot = hotSet && hotSet.has(k);
@@ -4586,9 +4969,11 @@ function drawOrderLayer(ctx, ox, oy) {
       ctx.restore();
     }
 
-    // arrowhead on an open route, or a closed-circuit ring
+    // arrowhead on an open route, a den on a route home, or a closed-circuit ring
     const last = runs[runs.length - 1];
-    if (!closed && last && last.length >= 2) {
+    if (home && last && last.length >= 1) {
+      homeMark(ctx, last[last.length - 1], S, h.color, bright, frozen);
+    } else if (!closed && last && last.length >= 2) {
       const a = last[last.length - 2], b = last[last.length - 1];
       const ang = Math.atan2(b.y - a.y, b.x - a.x);
       const len = S * 2.6;
@@ -4815,25 +5200,50 @@ function cardState(h) {
   const T = TOKENS;
   const look = h.state === 'active' && game.frightT > 0 && !h.frightImmune ? 'fright'
     : h.boostT > 0 ? 'boost' : null;
-  if (!h.isCommandable() || h.state === 'enteringDen') {
-    // eaten: the walk home has no clock worth quoting
+  if (!h.isCommandable() || (h.state === 'enteringDen' && h.eaten)) {
+    // eaten: the walk in as eyes has no clock worth quoting
     return { dot: T.muted, down: true, ring: null, look: 'eyes',
       lines: [[cap('HEADING HOME')], [cap('HOME')]] };
   }
+  /* The den is where green would lie most easily: a whole ghost in there
+     is a good thing, but it is only ORDERED once it has a route out, and
+     a route queued now goes the moment it can. So the dot follows the
+     route, as it does everywhere else on the roster, and so do the words. */
+  if (h.state === 'enteringDen') {
+    // sent home, and through the door: whole, and ready in a moment
+    if (h.path) {
+      return { dot: T.ok, ring: null, look,
+        lines: [[cap('HOME · BACK OUT')], [cap('BACK OUT')], [cap('OUT')]] };
+    }
+    return { dot: T.muted, ring: null, look,
+      lines: [[cap('HOME · GOING IN')], [cap('GOING IN')], [cap('IN')]] };
+  }
   if (h.state === 'respawn') {
+    /* Eyes in the den: the one wait the player cannot shorten. A route
+       drawn meanwhile is kept, and the card says so -- the same clock,
+       now counting down to it going rather than to it being whole. */
     const s = secs(h.respawnT);
-    return { dot: T.muted, down: true, look,
-      ring: { frac: h.respawnT / game.params.respawnTicks, color: T.muted },
+    const ring = { frac: h.respawnT / game.params.respawnTicks, color: T.muted };
+    if (h.path) {
+      return { dot: T.ok, down: true, look: 'eyes', ring,
+        lines: [[cap('LEAVES IN '), num(s)], [cap('OUT '), num(s)], [num(s)]] };
+    }
+    return { dot: T.muted, down: true, look: 'eyes', ring,
       lines: [[cap('BACK IN '), num(s)], [num(s)]] };
   }
   if (h.state === 'idle') {
-    const s = secs(h.releaseT);
-    return { dot: T.muted, down: true, look,
-      ring: { frac: h.releaseT / Math.max(1, h.releaseFrom), color: T.muted },
-      lines: [[cap('OUT IN '), num(s)], [num(s)]] };
+    // whole: nothing is counting, it goes when it has a route -- or, frozen
+    // with one drawn, on the first tick after the resume
+    if (h.path) {
+      return { dot: T.ok, ring: null, look,
+        lines: [[cap('HOME · LEAVING')], [cap('LEAVING')], [cap('OUT')]] };
+    }
+    return { dot: T.muted, ring: null, look,
+      lines: [[cap('HOME · READY')], [cap('READY')], [cap('DEN')]] };
   }
   if (h.state !== 'active') {
-    return { dot: T.muted, ring: null, look,
+    // on its way out: routed, bar RAZE's opening walk
+    return { dot: h.path ? T.ok : T.muted, ring: null, look,
       lines: [[cap('LEAVING DEN')], [cap('LEAVING')], [cap('EXIT')]] };
   }
   if (h.overdue && !h.path && !h.dir) {
@@ -4854,7 +5264,12 @@ function cardState(h) {
       const s = secs(orderTicks(h, p.tiles, 0, true));
       return { dot: T.ok, look, ring: progress, lines: [[cap('LOOP '), num(s)], [num(s)]] };
     }
-    const s = secs(orderTicks(h, p.tiles, p.idx, false));
+    const s = secs(routeTicks(h, p.tiles, p.idx));
+    if (p.home) {
+      // timed to the doorstep, where it hands itself to the den
+      return { dot: T.ok, look, ring: progress,
+        lines: [[cap('HOME IN '), num(s)], [cap('HOME '), num(s)], [num(s)]] };
+    }
     return { dot: T.ok, look, ring: progress, lines: [[cap('ROUTE '), num(s)], [num(s)]] };
   }
   if (h.dir) {
@@ -5011,8 +5426,11 @@ function drawRoster(ctx, ox, oy, leaving) {
 
     if (portrait) {
       const look = st.look;
+      // in the den the portrait looks where the ghost does: door or floor
+      const inDen = h.state === 'idle' || h.state === 'respawn';
       helpGhost(ctx, x + slotW - portW / 2 - S * 0.5, cy, S * 3,
-        look === 'boost' ? TOKENS.ink : h.color, look === 'boost' ? null : look);
+        look === 'boost' ? TOKENS.ink : h.color, look === 'boost' ? null : look,
+        inDen ? h.face() : undefined);
     }
     ctx.restore();
   });
@@ -5120,11 +5538,16 @@ function handFrom(a) {
 }
 function handTicks(a, upTo) {
   const tiles = upTo === undefined ? a.tiles : a.tiles.slice(0, upTo);
-  return orderTicks(a.hunter, tiles, handFrom(a), false);
+  return routeTicks(a.hunter, tiles, handFrom(a));
 }
 
 function pillState() {
   const T = TOKENS;
+  /* The den counts. A ghost waiting in there is one you can order, and
+     until it has a route it is exactly as unordered as one parked on the
+     board -- holding it for an ambush is legal, not "done". Eyes still in
+     the den count too, and a route queued for them is an order. Eyes out
+     on the board walking home are nobody's to order yet. */
   const squad = game.hunters.filter(h => h.isCommandable());
   const ordered = squad.filter(h => h.path).length;
   const stalled = stalledHunter();
@@ -5143,10 +5566,18 @@ function pillState() {
     /* A ghost still in the den walks the door first, which no route time
        can promise honestly, so it gets the instruction and no number. */
     if (h.state !== 'active') {
-      return { kind: 'drawing', dot: h.color, text: 'RELEASE TO COMMIT',
-        main: [[cap('RELEASE TO COMMIT', T.ink)], [cap('RELEASE', T.ink)]] };
+      return a.home
+        ? { kind: 'drawing', dot: h.color, text: 'RELEASE TO SEND HOME',
+            main: [[cap('RELEASE TO SEND HOME', T.ink)], [cap('SEND HOME', T.ink)], [cap('HOME', T.ink)]] }
+        : { kind: 'drawing', dot: h.color, text: 'RELEASE TO COMMIT',
+            main: [[cap('RELEASE TO COMMIT', T.ink)], [cap('RELEASE', T.ink)]] };
     }
     const s = secs(handTicks(a));
+    if (a.home) {
+      return { kind: 'drawing', dot: h.color, text: s + ' · RELEASE TO SEND HOME',
+        main: [[num(s), cap(' · RELEASE TO SEND HOME', T.ink)], [num(s), cap(' · SEND HOME', T.ink)],
+               [num(s), cap(' · HOME', T.ink)], [num(s)]] };
+    }
     return { kind: 'drawing', dot: h.color, text: s + ' · RELEASE TO COMMIT',
       main: [[num(s), cap(' · RELEASE TO COMMIT', T.ink)], [num(s), cap(' · RELEASE', T.ink)], [num(s)]] };
   }
@@ -5322,7 +5753,7 @@ function dragTag() {
   const head = a.tiles[a.tiles.length - 1];
   const loop = a.closable;
   const ticks = loop ? orderTicks(h, a.tiles.slice(0, -1), 0, true) : handTicks(a);
-  return { h, head, loop, ticks, pincer: pincerFor(a) };
+  return { h, head, loop, home: !!a.home, ticks, pincer: pincerFor(a) };
 }
 
 const TAG_EASE = 2.5;    // ticks: how far the tag lags the head tile
@@ -5351,7 +5782,9 @@ function drawDragTag(ctx, ox, oy) {
   const lineH = rolePx('caption') * 1.3;
   const maxW = Math.min(W - S * 4, S * 90) - padX * 2;
   const s = secs(st.ticks);
-  const lines = [fitRuns(ctx, st.loop ? [[cap('LOOP '), num(s)], [num(s)]] : [[num(s)]], maxW)];
+  const lines = [fitRuns(ctx, st.loop ? [[cap('LOOP '), num(s)], [num(s)]]
+    : st.home ? [[cap('HOME IN '), num(s)], [cap('HOME '), num(s)], [num(s)]]
+    : [[num(s)]], maxW)];
   if (st.pincer) {
     const who = st.pincer.with, ps = secs(st.pincer.ticks);
     const name = { t: who.def.name, role: 'caption', color: who.color };
@@ -5497,8 +5930,10 @@ const HELP_CHIP = { x: NATIVE_W - 7, y: 7, r: 4.2 };
 
 /* The roster ghost in miniature: dome, straight sides, three-flame hem.
    `look` is true or 'fright' for the frightened face, 'eyes' for a ghost
-   walking home as nothing but its eyes; anything else is the ghost. */
-function helpGhost(ctx, x, y, r, color, look) {
+   walking home as nothing but its eyes; anything else is the ghost.
+   `gaze` 'up' or 'down' turns the pupils the way the den turns them;
+   left out, they look along the page. */
+function helpGhost(ctx, x, y, r, color, look, gaze) {
   const fright = look === true || look === 'fright';
   ctx.save();
   ctx.translate(x, y);
@@ -5533,7 +5968,8 @@ function helpGhost(ctx, x, y, r, color, look) {
       ctx.fillStyle = '#ffffff';
       ctx.beginPath(); ctx.ellipse(ex, 0, 2, 2.4, 0, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#202090';
-      ctx.beginPath(); ctx.arc(ex + 1, 0, 1.1, 0, Math.PI * 2); ctx.fill();
+      const gy = gaze === 'up' ? -1.2 : gaze === 'down' ? 1.2 : 0;
+      ctx.beginPath(); ctx.arc(ex + (gy ? 0 : 1), gy, 1.1, 0, Math.PI * 2); ctx.fill();
     }
   }
   ctx.restore();
@@ -5675,6 +6111,27 @@ function helpFigure(ctx, kind, cx, cy, S) {
       helpGhost(ctx, cx + S * 5, cy, S * 3.4, null, true);
       break;
     }
+    case 'den': {
+      /* The den in miniature: a route running down through the door, the
+         ghost it sent sitting inside whole and watching the door, and a
+         pair of eyes beside it still sitting out their wait. Ready and
+         stuck, side by side, the way the board shows them. */
+      const w = S * 10, top = cy - S * 2, bot = cy + S * 8.5, door = S * 3;
+      ctx.strokeStyle = PAL.wall;
+      ctx.lineWidth = Math.max(1, S * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(cx - door, top); ctx.lineTo(cx - w, top); ctx.lineTo(cx - w, bot);
+      ctx.lineTo(cx + w, bot); ctx.lineTo(cx + w, top); ctx.lineTo(cx + door, top);
+      ctx.stroke();
+      ctx.strokeStyle = PAL.door;
+      ctx.beginPath(); ctx.moveTo(cx - door, top); ctx.lineTo(cx + door, top); ctx.stroke();
+      helpTrail(ctx, [
+        { x: cx - S * 11, y: cy - S * 8 }, { x: cx, y: cy - S * 8 }, { x: cx, y: top },
+      ], S * 0.8, HUNTER_DEFS[1].color, false);
+      helpGhost(ctx, cx - S * 4.5, cy + S * 4, S * 3.1, HUNTER_DEFS[1].color, null, 'up');
+      helpGhost(ctx, cx + S * 4.5, cy + S * 4, S * 3.1, HUNTER_DEFS[3].color, 'eyes', 'down');
+      break;
+    }
     case 'score': {
       ctx.fillStyle = PAL.dot;
       for (const k of [-1, 0, 1]) {
@@ -5700,6 +6157,7 @@ const HELP_ROWS = [
                    bt: 'TAP AN ARROWHEAD TO KEEP DRAWING' },
   { fig: 'camp',   a: 'OFF THE END IT COASTS TO A WALL',   b: 'CAMP LIMIT SETS HOW LONG IT WAITS' },
   { fig: 'fright', a: 'ENERGIZERS TURN YOUR SQUAD BLUE',   b: 'BLUE GHOSTS CAN BE EATEN' },
+  { fig: 'den',    a: 'DRAW A GHOST HOME TO RECHARGE IT',  b: 'IT LEAVES THE DEN ONLY ON ORDERS' },
   { fig: 'score',  a: 'SCORE = DOTS LEFT x LEVEL',         b: 'CATCH HIM FAST, BANK MORE' },
 ];
 /* What a line says when the column is too narrow to hold it at a legible
@@ -5715,6 +6173,8 @@ const HELP_SHORT = {
   'OFF THE END IT COASTS TO A WALL':      'THEN IT COASTS TO A WALL',
   'CAMP LIMIT SETS HOW LONG IT WAITS':    'CAMP LIMIT: HOW LONG IT WAITS',
   'ENERGIZERS TURN YOUR SQUAD BLUE':      'ENERGIZERS TURN YOU BLUE',
+  'DRAW A GHOST HOME TO RECHARGE IT':     'DRAW IT HOME TO RECHARGE',
+  'IT LEAVES THE DEN ONLY ON ORDERS':     'IT LEAVES ONLY ON ORDERS',
   'SPACE FREEZE   1-4 SELECT   RIGHT-DRAG ERASE   M MUTE': 'SPACE FREEZE  1-4 SELECT  M MUTE',
   'TAP FREEZE   ROSTER SELECTS   DRAG BACK TO UNDO':      'ROSTER SELECTS  DRAG BACK TO UNDO',
 };

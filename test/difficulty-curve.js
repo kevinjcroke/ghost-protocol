@@ -82,6 +82,9 @@ function playBoard(level, strategy, reissueEvery) {
   while (t < MAX_TICKS) {
     if (game.phase === 'play' && t % reissueEvery === 0) strategy();
     if (game.phase === 'command') game.phase = 'play';
+    // the den only opens on orders: draw its ghosts out the way it used to
+    // let them out, before either strategy gets its hands on them
+    if (game.phase === 'play') API.releaseDen();
     game.update(); t++;
     if (game.phase === 'capture' && !wasCapture) {
       wasCapture = true;

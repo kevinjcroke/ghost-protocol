@@ -26,13 +26,15 @@ You cannot steer a ghost directly. You freeze time and **draw** where it walks.
 | **Grab a ghost mid-play** | Freezes *and* starts its trail in one gesture |
 | **SPACE** | Freeze / unfreeze from the keyboard |
 | **Drag from a ghost** | Hand-draw the path it will walk |
+| **Drag from a ghost in the den** | Its route out — the only thing that lets it leave |
 | Drag back along the line | Retracts it, like an undo |
 | Return the tip to the start tile, release | Closes it into a **patrol loop** the ghost walks forever |
+| **Drag a route down onto the den door** | Sends that ghost **home**: it goes in and waits, charged, for a route out. The line ends in a little den instead of an arrowhead |
 | Click a route's arrowhead | Picks the line back up and continues drawing it |
 | Right-drag over a path | Erases from that point |
 | **1–4** / **Tab** or the roster buttons | Select a ghost (it floats to the top of any pile) |
 | Click a pile of ghosts repeatedly | Cycles through the ones stacked there |
-| **? chip (top right)** or **H** | The pocket manual — seven rules with figures, freezes play while open |
+| **? chip (top right)** or **H** | The pocket manual — eight rules with figures, freezes play while open |
 | **M** | Mute |
 
 There is deliberately no "clear order" gesture: drawing a new order *is* the
@@ -76,14 +78,26 @@ with it pre-selected and will not resume until it has somewhere to be. Set
 the limit OFF and the original cruelty rule returns undiluted — no forced
 pauses, ghosts camp forever, and nobody saves you from a forgotten statue.
 
-The roster reads the whole squad at a glance: `ORDERED`, `PATROL`,
-`DRIFTING` (coasting toward its stall), `CAMP 7` (parked, counting down to
-intervention), `CAMPED` (parked with the limit off), `ORDERS!` (overdue,
-blocking the resume), `OVERDRIVE`, `DOWN`. The play button burns amber while
-anyone is overdue and goes green when the squad is ready.
+The roster reads the whole squad at a glance, and every figure on it is
+what the machine will then do, tick for tick: `ROUTE 3.2s`, `LOOP 6.0s`,
+`HOME IN 2.4s` (a route home, timed to the doorstep where it goes in),
+`STOPS IN 4 TILES` (coasting toward its stall), `5s LEFT` (parked, counting
+down to intervention), `CAMPED` (parked with the limit off), `NEEDS ORDERS`
+(overdue, blocking the resume), `OVERDRIVE 4.1s`. The den has its own
+words: `HEADING HOME` and `BACK IN 3.1s` for an eaten ghost, greyed, with
+its portrait gone to eyes; `LEAVES IN 3.1s` once you have queued its route
+out; `HOME · READY` for a whole ghost waiting on your orders, and `HOME ·
+LEAVING` once you've drawn it out; `HOME · GOING IN` (or `HOME · BACK OUT`,
+with a route out already queued) and `LEAVING DEN` on the way through the
+door. The green dot means the same thing on every card — that ghost has
+orders — so a ready den ghost only turns green once it has a route. Every
+label has a shorter form for a phone's card. The status pill counts the den like everyone else:
+a ghost sitting in there is not ordered until it has a route. The play
+button burns amber while anyone is overdue and goes green when the squad is
+ready.
 
-Ghosts pile onto the same tile constantly — three of them leave the den
-together — and a click can only land on one. So each keeps a permanent number
+Ghosts pile onto the same tile constantly — every one of them leaves the den
+by the same door — and a click can only land on one. So each keeps a permanent number
 and a button. The roster along the bottom of the frozen screen shows who is
 who and which of them currently has somewhere to be: click a name to select
 that ghost (it floats to the front of whatever pile it's standing in), press
@@ -156,11 +170,58 @@ walk exactly what you drew and nothing else. That asymmetry is the game.
 ### Energizers invert
 
 When he eats an energizer the roles flip for a few seconds: your hunters turn
-blue and he can eat them, sending them back to the den on a respawn timer. The
-four energizers are ticking bombs on your board. Frightened hunters obey the
+blue and he can eat them, sending them back to the den as bare eyes that sit
+five seconds in there before they can come out. Or beat him to it and draw a
+blue ghost home yourself (see *The den*). The four energizers are ticking
+bombs on your board. Frightened hunters obey the
 exact same order and wall rules — being blue does not make them run away by
 themselves. That's your problem to solve, and body-blocking him off an
 energizer is a real tactic.
+
+### The den
+
+**Nobody leaves the den without a route.** RAZE opens every life outside
+the door; the other three sit inside until you draw them out, and drawing
+the route is the release. There is no timer letting anyone out behind your
+back — and the route has to last the whole way out: erase it while the
+ghost is still on its way up through the door and it goes back to its seat.
+
+**The den is a recharge.** Draw a route down onto the door and that ghost
+walks home, goes in with its own colour on — never blue in there — and waits.
+Leaving the den always sheds the blue, so a ghost you dunk while he is on his
+energizer run comes back out able to catch him while he still thinks he is
+the hunter. The walk is the whole price; a route home is terminal (nothing
+extends past the door, and it can't be part of a patrol loop). Waiting in
+the den is legal for as long as you like: it never runs the camp clock and
+never holds up the resume.
+
+**Getting eaten is strictly worse.** An eaten ghost walks home as eyes and
+sits in the den *as eyes* for five seconds before it gets its body back —
+so you can always tell who is stuck and who is ready. A route drawn for it
+meanwhile is kept, and it goes the moment the wait is over.
+
+**You can read the den at a glance.** On the board a ghost that is stuck
+is only its eyes, looking at the floor; a ghost that is ready is its whole
+body in its own colour, looking up at the door. Frozen, the ready ones also
+wear a small chevron pointing at the door, and their cards say `HOME ·
+READY` where the stuck ones count down `BACK IN 3.1s`. A route drawn home
+ends in a little den instead of an arrowhead, with no coast past it, and its
+beads stop at the doorstep, because that is where the ghost hands itself to
+the den. A blue one is safe from that tick; a hunting one still catches him
+on the doorstep row until it starts down through the door — touch is
+capture there like everywhere else, and he knows it. The machine says it too: a short clunk when a ghost goes through the
+door on your orders, and two soft notes when a den ghost is whole and ready.
+Neither stops the game.
+
+**He knows what the den holds, not what you'll do with it.** A whole ghost
+inside is a hunter on a delay, and he can see it. While he is energized he
+gives the corridor outside the door a wide berth in proportion to how soon a
+charged ghost could be out — with some benefit of the doubt on the first
+boards and none from level 7. Once you draw its route out, it is an order like any other and he
+reads it the way he reads every route you've committed. He still chases a
+blue ghost running for home right up to the door; that chase is your
+ambush. Eyes are nothing to him, route or no route, because nothing gets
+them out before their wait is over.
 
 ## Progression
 
@@ -169,7 +230,7 @@ across however many lives he has left, since the dots stay eaten. Each level he
 gets faster, his lookahead deepens, his willingness to gamble on a feint goes
 up, and he starts reading further into the orders you've already committed —
 by level 4 he is predicting your drawn paths, not just reacting to positions.
-Frightened time shortens; hunters take longer to come back.
+Frightened time shortens, so the den ambush fades as the boards climb.
 
 ## About the assets
 
@@ -222,9 +283,12 @@ seconds.
 node test/test-game.js && node test/validate-maze.js && node test/no-infinite-lanes.js && node test/palette-lock.js
 ```
 
-- **test-game.js** — 277 checks. The game: path retraction, loop closure,
+- **test-game.js** — 380 checks. The game: path retraction, loop closure,
   self-crossing, the refusal to reroute, orders queued from the den, the
-  wall-stop rule, the energizer role reversal, eyes and respawn, capture and
+  route-only den release, the trip home and the den ambush, his read of the
+  den door, how a stuck ghost and a ready one read on the board, the glass
+  and the cards, the wall-stop rule, the energizer role reversal, eyes and
+  respawn, capture and
   pincer scoring, his three lives and the dots that stay eaten across them,
   board loss, level flow, touch input through real events, and a 30,000-tick
   soak. The glass: that freeze and resume flip on the click tick while every

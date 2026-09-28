@@ -66,11 +66,13 @@ vm.createContext(sandbox);
 const src = fs.readFileSync(require('path').join(__dirname, '..', 'game.js'), 'utf8')
   + `\n;globalThis.__api = {
        game, Draw, tcx, tcy, COLS, MAZE_ROWS, TILE, DIRS, OPP,
-       bfsRoute, neighborsOf, wrapCol, isOpen, tileOfPx,
+       DEN_SEATS, DOOR_ROW, DOOR_C0, DOOR_C1, DEN_EXIT_ROW, DEN_EXIT_X,
+       bfsRoute, neighborsOf, wrapCol, isOpen, tileOfPx, levelParams,
        BOARDS, setBoard, boardForLevel,
        get TUNNEL_ROWS() { return TUNNEL_ROWS; },
        resumeFromCommand, stalledHunter, startDemo, openHelp, closeHelp, render, Sound,
-       rosterUI, helpUI, input, HELP_ROWS,
+       rosterUI, helpUI, input, HELP_ROWS, HELP_SHORT,
+       SPRITES, drawTrail, drawHunterHi, routeTicks, beadWalk, homeMark,
        frame, pauseToCommand, fx, fitText, springIn, easeOut,
        bankBand, splitBank, SPLIT_TICKS, syncShell, shell,
        bountyNow, dotsLeftNow, driftTiles, runOutFrom, orderTicks, cardState, pillState,
@@ -107,6 +109,22 @@ sandbox.__api.screen = screen;
 sandbox.__api.win = sandbox.window;
 sandbox.__api.doc = sandbox.document;
 sandbox.__api.reducedMotionMQ = reducedMotionMQ;
+
+/* The den lets nobody out without a route, but the scripted players in the
+   sim scripts were measured against a den that emptied itself: each ghost
+   popped out, drifted left or right along the door row and wall-stopped.
+   This draws exactly that for any den ghost with no order -- one step off
+   the door, alternating sides, then the coast -- so their numbers stay
+   comparable with the ones taken before. */
+let denFlip = false;
+sandbox.__api.releaseDen = () => {
+  const g = sandbox.__api.game;
+  for (const h of g.hunters) {
+    if ((h.state !== 'idle' && h.state !== 'respawn') || h.path) continue;
+    denFlip = !denFlip;
+    h.setOrder([{ c: 13, r: 11 }, { c: denFlip ? 12 : 14, r: 11 }], false);
+  }
+};
 
 /* Touches, assembled the way a TouchEvent carries them: `touches` is every
    finger still on the glass, `changedTouches` only the ones this event is

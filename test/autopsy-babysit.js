@@ -31,6 +31,7 @@ for (let trial = 0; trial < TRIALS; trial++) {
       if (h && et.c >= 0 && et.c < COLS) orderTo(h, { c: wrapCol(et.c), r: et.r });
     }
     if (game.phase === 'command') game.phase = 'play';
+    if (game.phase === 'play') API.releaseDen();   // the den only opens on orders
     game.update(); t++;
     if (t % 10 === 0) {
       const et = ev.tile();
