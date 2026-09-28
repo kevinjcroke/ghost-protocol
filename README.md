@@ -164,8 +164,18 @@ level. The extra board arrives at 10000.
 
 Your ghosts are *not* slower than him in any meaningful way — they run at
 near parity. Their handicap is that they cannot improvise. He re-decides at
-every junction and can read the orders you've already committed; your four
-walk exactly what you drew and nothing else. That asymmetry is the game.
+every junction; your four walk exactly what you drew and nothing else. That
+asymmetry is the game.
+
+**He doesn't read your routes. He assumes the worst.** Every moving ghost
+counts, in his head, as one that could be coming at him down the shortest
+corridor at full hunting speed, whatever you actually drew for it. A parked
+ghost is a statue that could wake the moment you give it an order. The only
+thing your drawing tells him is which ghosts are moving, and that is plain
+on the board anyway. This is deliberate. Freezing is free and unlimited, so
+a prey that trusted your routes could be lied to forever: draw a decoy, let
+him commit, freeze, redraw. Planning against the worst leaves nothing to
+bluff. You win by closing exits, not by fooling him.
 
 ### Energizers invert
 
@@ -217,20 +227,23 @@ Neither stops the game.
 inside is a hunter on a delay, and he can see it. While he is energized he
 gives the corridor outside the door a wide berth in proportion to how soon a
 charged ghost could be out — with some benefit of the doubt on the first
-boards and none from level 7. Once you draw its route out, it is an order like any other and he
-reads it the way he reads every route you've committed. He still chases a
-blue ghost running for home right up to the door; that chase is your
-ambush. Eyes are nothing to him, route or no route, because nothing gets
+boards and none from level 7. Once you draw its route out, the ghost starts
+for the door on that tick, and he treats the door as a hunter about to come
+through it. That's the same worst case he plans for with every moving ghost:
+he doesn't know where the route goes after the door, only that something is
+coming out. He still chases a blue ghost running for home right up to the
+door; that chase is your ambush. Eyes are nothing to him, route or no route, because nothing gets
 them out before their wait is over.
 
 ## Progression
 
 Win a board by catching him three times. Lose one if he clears every dot —
 across however many lives he has left, since the dots stay eaten. Each level he
-gets faster, his lookahead deepens, his willingness to gamble on a feint goes
-up, and he starts reading further into the orders you've already committed —
-by level 4 he is predicting your drawn paths, not just reacting to positions.
-Frightened time shortens, so the den ambush fades as the boards climb.
+gets faster, his lookahead deepens, and his willingness to gamble on a feint
+goes up. What he knows never changes: at every level he plans against the
+worst your ghosts could do, never against what you drew. The benefit of the
+doubt he gives the den door runs out by level 7. Frightened time shortens,
+so the den ambush fades as the boards climb.
 
 ## About the assets
 
