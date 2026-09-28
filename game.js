@@ -826,10 +826,10 @@ const Sound = {
     return this.muted
       || (!this.forceAudible && typeof game !== 'undefined' && game.demo);
   },
-  uiBlip(f0, f1, dur, type, vol) {
+  uiBlip(f0, f1, dur, type, vol, when) {
     const was = this.forceAudible;
     this.forceAudible = true;
-    this.blip(f0, f1, dur, type, vol);
+    this.blip(f0, f1, dur, type, vol, when);
     this.forceAudible = was;
   },
 
@@ -907,8 +907,41 @@ const Sound = {
     this.siren.frequency.linearRampToValueAtTime(base, s + cyc);
     this.sirenNext = s + cyc;
   },
+  /* Scheduled, never written through .value: a direct write loses to any
+     ramp still queued on the param, and the tape ramps below queue them.
+     Mixing the two is how a quick freeze-thaw-freeze left the siren stuck
+     silent or an octave flat. */
   setSirenAudible(on) {
-    if (this.sirenGain) this.sirenGain.gain.value = (on && !this.quiet()) ? 0.035 : 0;
+    if (!this.sirenGain) return;
+    const g = this.sirenGain.gain, t = this.ctx.currentTime;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime((on && !this.quiet()) ? 0.035 : 0, t);
+  },
+  /* Ramp from wherever the param actually is right now, so a ramp that
+     interrupts another picks up mid-slide instead of jumping. */
+  rampParam(p, to, dur) {
+    const t = this.ctx.currentTime, from = p.value;
+    p.cancelScheduledValues(t);
+    p.setValueAtTime(from, t);
+    p.linearRampToValueAtTime(to, t + dur);
+  },
+  /* Stopping time is heard as a reel stopping: the siren is not cut, it
+     sags more than an octave and runs out of breath in 180ms. It sits under
+     the freeze blip, which stays the click's own sound. Detune rides on top
+     of tickSiren's frequency sweep, so the two never fight over a param. */
+  tapeStop() {
+    if (!this.ctx || !this.siren) return;
+    this.rampParam(this.siren.detune, -1400, 0.18);
+    this.rampParam(this.sirenGain.gain, 0, 0.18);
+  },
+  /* And the reel coming back up to speed. The siren only returns if the
+     board would be playing it -- not under fright, not muted, not in the
+     silent demo -- but the pitch always comes home, so a siren restored
+     later never starts out an octave flat. */
+  tapeStart(audible) {
+    if (!this.ctx || !this.siren) return;
+    this.rampParam(this.siren.detune, 0, 0.15);
+    this.rampParam(this.sirenGain.gain, (audible && !this.quiet()) ? 0.035 : 0, 0.04);
   },
 
   chomp() {
@@ -939,6 +972,27 @@ const Sound = {
   uiThaw() { this.uiBlip(350, 700, 0.06, 'triangle', 0.1); },
   uiCommit() { this.uiBlip(950, 950, 0.03, 'square', 0.08); },
   uiClear() { this.uiBlip(300, 140, 0.08, 'square', 0.07); },
+  /* A refused PLAY: two dry ticks under the buzz, the sound of a control
+     that is locked rather than broken. */
+  uiRefuse() {
+    if (!this.ctx) return;
+    const was = this.forceAudible;
+    this.forceAudible = true;
+    const t = this.ctx.currentTime;
+    this.blip(1800, 1800, 0.012, 'sine', 0.08, t);
+    this.blip(1800, 1800, 0.012, 'sine', 0.08, t + 0.07);
+    this.forceAudible = was;
+  },
+
+  /* The pincer read, heard: two notes up when the route in your hand
+     starts meeting another ghost's, one soft note down when it stops. Quiet
+     enough to sit under a long drag that wanders in and out of one. */
+  uiPincerOn() {
+    const t = this.ctx && this.ctx.currentTime;
+    this.uiBlip(660, 700, 0.05, 'triangle', 0.05, t);
+    this.uiBlip(990, 1040, 0.07, 'triangle', 0.05, t + 0.06);
+  },
+  uiPincerOff() { this.uiBlip(520, 390, 0.09, 'sine', 0.035); },
 
   /* Original start-of-round jingle (composed for this game), arranged in
      the 1980 arcade-intro idiom: a staccato square lead over a triangle
@@ -1041,6 +1095,12 @@ function stepEntity(e, decide) {
 /* ------------------------------- hunters -------------------------------- */
 
 const EYE_TARGET = { c: 13, r: DEN_EXIT_ROW };
+const BOOST_SPEED = 1.22;       // prize overdrive, as a multiple of hunting speed
+const BOOST_TICKS = 480;        // and how long it lasts: 8 seconds
+/* The slow stretch of a tunnel row: the mouths and the wrap zone beyond. */
+function inTunnelAt(c, r) {
+  return TUNNEL_ROWS.includes(r) && (c <= 6 || c >= 21);
+}
 
 class Hunter {
   constructor(def, slot) {
@@ -1071,6 +1131,7 @@ class Hunter {
     this.campT = 0;
     this.overdue = false;
     this.releaseT = 10 + this.slot * 30;    // rapid-fire den release: seconds, not a queue
+    this.releaseFrom = this.releaseT;        // the wait it started with, for the glass
     this.dissolveT = -1;
     this.frightImmune = false;  // set on every den exit; only a fresh energizer clears it
   }
@@ -1256,11 +1317,10 @@ class Hunter {
     }
     const fright = game.frightT > 0 && !this.frightImmune;
     const t = this.tile();
-    const inTunnel = TUNNEL_ROWS.includes(t.r) && (t.c <= 6 || t.c >= 21);
     this.speed = fright ? game.params.hunterFrightSpeed
-               : inTunnel ? game.params.hunterTunnelSpeed
+               : inTunnelAt(t.c, t.r) ? game.params.hunterTunnelSpeed
                : game.params.hunterSpeed;
-    if (this.boostT > 0 && !fright) this.speed *= 1.22;   // prize overdrive
+    if (this.boostT > 0 && !fright) this.speed *= BOOST_SPEED;   // prize overdrive
     stepEntity(this, (e, ws) => this.decide(e, ws));
   }
 
@@ -1617,15 +1677,96 @@ function runOutFrom(tiles) {
   const tip = tiles[tiles.length - 1], back = tiles[tiles.length - 2];
   let dc = tip.c - back.c, dr = tip.r - back.r;
   if (dc > 1) dc = -1; if (dc < -1) dc = 1;
+  if (!dc && !dr) return [];
+  return driftTiles(tip, dc === 1 ? 'right' : dc === -1 ? 'left' : dr === 1 ? 'down' : 'up');
+}
+
+/* The same coast for a ghost already drifting: every tile it will still
+   cross on `dir` before the wall stops it, the one it stops on last.
+   Tiles are the maze's own, so a trip through the wrap zone counts the
+   cells you can see. A ghost standing in the wrap zone itself is taken
+   to be about to re-enter on the side it is heading for. */
+function driftTiles(tile, dir) {
+  const d = DIRS[dir];
+  if (!d) return [];
+  let c = tile.c, r = tile.r, guard = 0;
+  if (c < 0 || c >= COLS) c = d.x < 0 ? COLS : -1;
   const out = [];
-  let c = tip.c, r = tip.r, guard = 0;
   while (guard++ < 40) {
-    const nc = wrapCol(c + dc), nr = r + dr;
+    const nc = wrapCol(c + d.x), nr = r + d.y;
     if (!isOpen(nc, nr) || inDen(nc, nr)) break;
     out.push({ c: nc, r: nr });
     c = nc; r = nr;
   }
   return out;
+}
+
+/* How long a hunter takes, in ticks, to walk tiles[from..] from where it
+   stands -- or with `lap`, one full circuit of a closed order starting
+   now. Walked at the speeds update() will actually pick: the tunnel
+   mouths slow it, overdrive lifts it until boostT runs out, fright drags
+   it until frightT does. The glass prints this as a promise, so it is
+   worked out the way the machine will do it, not from a flat rate. */
+function orderTicks(h, tiles, from, lap) {
+  const P = game.params;
+  const boostEnd = h.boostT;
+  const frightEnd = h.frightImmune ? 0 : game.frightT;
+  let t = 0;
+  const walk = (len, tunnel) => {
+    for (let guard = 0; len > 1e-6 && guard < 8; guard++) {
+      const fright = t < frightEnd;
+      let v = fright ? P.hunterFrightSpeed : tunnel ? P.hunterTunnelSpeed : P.hunterSpeed;
+      if (!fright && t < boostEnd) v *= BOOST_SPEED;
+      let edge = Infinity;
+      if (t < frightEnd) edge = frightEnd;
+      if (t < boostEnd) edge = Math.min(edge, boostEnd);
+      const dt = Math.min(len / v, edge - t);
+      len -= v * dt; t += dt;
+    }
+  };
+  // half of each step is spent in the tile it leaves, half in the next;
+  // a step across the seam runs the whole wrap zone, two tiles, all tunnel
+  const step = (a, b) => {
+    if (Math.abs(b.c - a.c) > 1) { walk(TILE * 2, true); return; }
+    walk(TILE / 2, inTunnelAt(a.c, a.r));
+    walk(TILE / 2, inTunnelAt(b.c, b.r));
+  };
+  const n = tiles.length;
+  if (lap) {
+    for (let i = 0; i < n; i++) step(tiles[i], tiles[(i + 1) % n]);
+    return t;
+  }
+  if (from >= n) return 0;
+  // first leg: from the hunter's own position to the tile it is aiming at
+  const here = h.tile(), goal = tiles[from];
+  /* A ghost turns only on a tile centre. Ordered back the way it came
+     before it has reached this one, it carries on to the centre first and
+     only then turns round -- so that is the walk, not the straight line
+     back, which would come up short by twice the distance still to go. */
+  const d = DIRS[h.dir];
+  const dc = Math.abs(goal.c - here.c);
+  const nextDoor = goal.r === here.r ? dc === 1 || dc === COLS - 1
+    : dc === 0 && Math.abs(goal.r - here.r) === 1;
+  if (d && nextDoor) {
+    const ahead = (tcx(here.c) - h.x) * d.x + (tcy(here.r) - h.y) * d.y;
+    let gx = tcx(goal.c) - h.x;
+    if (gx > NATIVE_W / 2) gx -= NATIVE_W + TILE;
+    else if (gx < -NATIVE_W / 2) gx += NATIVE_W + TILE;
+    if (ahead > 1e-6 && gx * d.x + (tcy(goal.r) - h.y) * d.y < 0) {
+      walk(ahead, inTunnelAt(here.c, here.r));
+      step(here, goal);
+      for (let i = from + 1; i < n; i++) step(tiles[i - 1], tiles[i]);
+      return t;
+    }
+  }
+  let dx = Math.abs(tcx(goal.c) - h.x);
+  if (dx > NATIVE_W / 2) dx = NATIVE_W + TILE - dx;
+  const len = dx + Math.abs(tcy(goal.r) - h.y);
+  const inHere = Math.max(0, len - TILE / 2);
+  walk(inHere, inTunnelAt(here.c, here.r));
+  walk(len - inHere, inTunnelAt(goal.c, goal.r));
+  for (let i = from + 1; i < n; i++) step(tiles[i - 1], tiles[i]);
+  return t;
 }
 
 /* draw one trail (committed or in-progress) */
@@ -1748,6 +1889,15 @@ function computeHotBeads(game) {
     }
   }
   return lists;
+}
+/* The pincer read is the same answer for everyone who asks within one
+   frame, and it is not free (every trail against every other, bead by
+   bead). render() opens a frame's worth of cache and closes it again, so
+   a caller outside a render always gets the state as it stands now. */
+let hotFrame = null, hotFrameOpen = false;
+function hotBeadsNow() {
+  if (!hotFrameOpen) return computeHotBeads(game);
+  return hotFrame || (hotFrame = computeHotBeads(game));
 }
 
 /* ------------------------------ the evader ------------------------------
@@ -2141,6 +2291,13 @@ function levelParams(n) {
   };
 }
 
+/* What a catch would bank this instant: the dots he never got, times the
+   level. The capture pays exactly this, and the glass quotes exactly
+   this, from the one place -- two copies of a formula are how a screen
+   ends up promising a number the score never gives. */
+function dotsLeftNow() { return Math.max(0, dotTotal - game.dotsEaten); }
+function bountyNow() { return dotsLeftNow() * game.level; }
+
 /* ------------------------------- the game ------------------------------- */
 
 const game = {
@@ -2221,6 +2378,7 @@ const game = {
     buildMaze();
     this.dotsEaten = 0;
     this.evaderLives = 3;
+    shell.key = null;   // the room is relit from scratch on the next frame
     this.startLevel(false);
   },
 
@@ -2260,7 +2418,7 @@ const game = {
     this.fruit = null;
     Sound.fruit();
     if (byHunter) {
-      byHunter.boostT = 480;   // 8 seconds of overdrive
+      byHunter.boostT = BOOST_TICKS;
       this.popup(byHunter.x, byHunter.y - 10, byHunter.def.name + ' FAST', byHunter.color);
     } else {
       this.popup(DEN_EXIT_X, tcy(FRUIT_TILE.r), 'HE TOOK IT', PAL.magenta);
@@ -2373,8 +2531,8 @@ const game = {
         dirsSeen.add(ht.c - et.c > 0 ? 'e' : ht.c - et.c < 0 ? 'w' : ht.r - et.r > 0 ? 's' : 'n');
       }
     }
-    const dotsLeft = Math.max(0, dotTotal - this.dotsEaten);
-    const banked = dotsLeft * this.level;
+    const dotsLeft = dotsLeftNow();
+    const banked = bountyNow();
     this.captureInfo = { banked, dotsLeft, hunters: bonusHunters, dirs: dirsSeen.size };
     this.addScore(banked);
     this.popup(this.evader.x, this.evader.y - 10, String(banked), PAL.cyan);
@@ -2484,7 +2642,7 @@ const game = {
         if (h.state === 'active' && this.phase === 'play') {
           Draw.select(i);
           this.popup(h.x, h.y - 10, h.def.name + ': ORDERS?', h.color);
-          pauseToCommand();
+          pauseToCommand(h);   // out of the ghost that ran dry or overstayed
         }
       }
     } else {
@@ -2575,6 +2733,7 @@ function enterAttract() {
   game.attract = { page: 0, t: 0, introStep: 0 };
   game.demo = false;
   Sound.stopSiren();
+  shell.key = null;
   setBoard(0);   // the marquee always shows the opener
   buildMaze();
 }
@@ -2588,6 +2747,11 @@ const input = {
   touchId: null,         // the finger currently standing in for the mouse
   pendingResume: false,  // a touch that will mean "go" if it lifts as a tap
   pressT: 0,             // when the press landed, for the quick-tap ruling
+  // the mouse at rest, for the glass's hover and cursor: display px, and
+  // whether it is over the page at all. A finger never sets these.
+  dx: -1, dy: -1, hovering: false,
+  pressedCtl: null,      // the control under a press: 'play' 'camp' 'slotN' 'help' 'close'
+  hoverCtl: null,        // ...and under a resting mouse
 };
 
 /* How far a press may wander and still count as a tap rather than a drag --
@@ -2655,13 +2819,30 @@ function inRect(p, r, pad) {
       && p.y >= r.y - t && p.y <= r.y + r.h + b;
 }
 
-function pauseToCommand() {
+/* `origin` is whatever stopped time, in native maze px (the frame actor x/y
+   and input.mx/my live in): the press point, the ghost that grabbed or ran
+   dry, the ? chip. The glass animates its entrance out of that point. The
+   phase itself flips here and now, on the click tick -- only the look is
+   allowed to take a moment, and nothing the simulation reads waits on it. */
+function pauseToCommand(origin) {
   if (game.phase === 'play') {
     game.phase = 'command';
     Sound.uiFreeze();
-    Sound.setSirenAudible(false);
+    Sound.tapeStop();
     game.hint = false;
+    const o = origin || ghostOrigin(Draw.selected);
+    fx.origin = { x: o.x, y: o.y };
+    // stopping the clock again straight after starting it gets no fanfare
+    fx.skipEnter = uiClock - fx.thawAt < FX_REFREEZE;
+    fx.enterAt = uiClock;
   }
+}
+/* Where a ghost stands, as a freeze origin -- or the middle of the maze
+   when that slot has nobody commandable to point at. */
+function ghostOrigin(i) {
+  const h = game.hunters[i];
+  if (h && h.isCommandable()) return { x: h.x, y: h.y };
+  return { x: NATIVE_W / 2, y: MAZE_ROWS * TILE / 2 };
 }
 /* The camp-limit dial. A ghost may stand parked this long before the game
    freezes and demands orders; OFF restores the original undiluted rule --
@@ -2706,11 +2887,14 @@ function resumeFromCommand() {
       // refuse: point at the ghost that still needs somewhere to be
       Draw.select(game.hunters.indexOf(stalled));
       Sound.uiClear();
+      Sound.uiRefuse();
+      fx.refusedAt = uiClock;   // the status pill shakes its head
       return;
     }
     game.phase = 'play';
+    fx.thawAt = uiClock;
     Sound.uiThaw();
-    if (game.frightT <= 0) Sound.setSirenAudible(true);
+    Sound.tapeStart(game.frightT <= 0);
   }
 }
 
@@ -2718,7 +2902,9 @@ function resumeFromCommand() {
    should never cost you the round. Closing it never auto-resumes; the click
    is still the clock. */
 function openHelp() {
-  if (game.phase === 'play') pauseToCommand();
+  if (game.phase === 'play') {
+    pauseToCommand({ x: HELP_CHIP.x, y: HELP_CHIP.y - HUD_TOP * TILE });
+  }
   game.helpOpen = true;
   Sound.uiCommit();
 }
@@ -2742,7 +2928,8 @@ function bindInput() {
     if (ev.code === 'Space' || ev.code === 'KeyP') {
       ev.preventDefault();
       if (game.phase === 'attract' || game.phase === 'gameover') { game.newGame(); return; }
-      if (game.phase === 'play') pauseToCommand();
+      // a key has no point on the glass; the ghost it will talk to does
+      if (game.phase === 'play') pauseToCommand(ghostOrigin(Draw.selected));
       else if (game.phase === 'command') resumeFromCommand();
     } else if (ev.code === 'Escape') {
       resumeFromCommand();
@@ -2750,17 +2937,19 @@ function bindInput() {
       // pick a ghost by number, even if it is buried under the other three
       const i = Number(ev.code.slice(5)) - 1;
       if (game.hunters[i] && game.hunters[i].isCommandable()) {
-        if (game.phase === 'play') pauseToCommand();
+        if (game.phase === 'play') pauseToCommand(ghostOrigin(i));
         Draw.select(i);
       }
     } else if (ev.code === 'Tab') {
       ev.preventDefault();
       if (game.phase === 'command' || game.phase === 'play') {
-        if (game.phase === 'play') pauseToCommand();
+        let next = -1;
         for (let n = 1; n <= 4; n++) {
           const i = (Draw.selected + n) % game.hunters.length;
-          if (game.hunters[i].isCommandable()) { Draw.select(i); break; }
+          if (game.hunters[i].isCommandable()) { next = i; break; }
         }
+        if (game.phase === 'play') pauseToCommand(ghostOrigin(next < 0 ? Draw.selected : next));
+        if (next >= 0) Draw.select(next);
       }
     } else if (ev.code === 'KeyM') {
       Sound.muted = !Sound.muted;
@@ -2780,15 +2969,21 @@ function bindInput() {
     /* The manual sits above everything, including the attract screen. While
        it is open no click reaches the game: the X or anywhere off the page
        closes it, everything else is ignored. */
+    if (button === 0) { input.pressedCtl = null; fx.release = null; }
     if (game.helpOpen) {
+      if (button === 0 && inRect(dp, helpUI.close, tapPad(4, 4, 4, 4))) input.pressedCtl = 'close';
       if (button === 0 && (inRect(dp, helpUI.close, tapPad(4, 4, 4, 4)) || !inRect(dp, helpUI.panel))) closeHelp();
       return;
     }
-    if (button === 0 && inRect(dp, helpUI.btn, tapPad(3, 3, 3, 3))) { openHelp(); return; }
+    if (button === 0 && inRect(dp, helpUI.btn, tapPad(3, 3, 3, 3))) {
+      input.pressedCtl = 'help';
+      openHelp();
+      return;
+    }
     if (game.phase === 'attract' || game.phase === 'gameover') { game.newGame(); return; }
     if (button === 2) {
       input.rightDown = true;
-      if (game.phase === 'play') { pauseToCommand(); return; }
+      if (game.phase === 'play') { pauseToCommand(p); return; }
       if (game.phase === 'command') Draw.beginErase(game, Math.floor(p.x / TILE), Math.floor(p.y / TILE), p.x, p.y);
       return;
     }
@@ -2804,12 +2999,21 @@ function bindInput() {
          empty margin on its right; on its left it stops short of the last
          roster plate. The camp chip grows upward into dead HUD space and
          never down onto the plate beneath it. */
-      if (inRect(dp, rosterUI.play, tapPad(1.5, 10, 4, 0.5))) { resumeFromCommand(); return; }
-      if (inRect(dp, rosterUI.camp, tapPad(6, 3, 0, 8))) { cycleCampChoice(); return; }
+      if (inRect(dp, rosterUI.play, tapPad(1.5, 10, 4, 0.5))) {
+        input.pressedCtl = 'play';
+        resumeFromCommand();
+        return;
+      }
+      if (inRect(dp, rosterUI.camp, tapPad(6, 3, 0, 8))) {
+        input.pressedCtl = 'camp';
+        cycleCampChoice();
+        return;
+      }
       const slot = rosterUI.slots.find(s => inRect(dp, s, tapPad(1, 1, 4, 1)));
       if (slot) {
         const h = game.hunters[slot.i];
         if (h && h.isCommandable()) {
+          input.pressedCtl = 'slot' + slot.i;
           Draw.select(slot.i);   // floats it to the front of any pile
           Sound.uiCommit();
         }
@@ -2822,8 +3026,9 @@ function bindInput() {
        play button -- do that thing instead. A ghost grabbed mid-play still
        freezes and starts its trail in one gesture. */
     const wasPlaying = game.phase === 'play';
-    if (wasPlaying) pauseToCommand();
+    // picked first, so time can stop out of the ghost that was grabbed
     const picked = Draw.pickAt(p.x, p.y);
+    if (wasPlaying) pauseToCommand(picked || p);
     if (picked && game.phase === 'command') Draw.begin(picked);
     else if (!picked && game.phase === 'command' && !wasPlaying) {
       // an arrowhead is a handle: pick a committed route up at its tip and
@@ -2839,8 +3044,10 @@ function bindInput() {
          looking. A thumb that lands and then slides has changed its mind
          (the drag threshold catches it) and the game stays frozen; a cursor
          does not wander like that, so the mouse keeps deciding on press. */
-      if (touchMode) input.pendingResume = true;
-      else resumeFromCommand();
+      if (touchMode) {
+        input.pendingResume = true;
+        fx.release = { x: p.x, y: p.y, brokeAt: null };   // the ring shows the slop
+      } else resumeFromCommand();
     }
   }
 
@@ -2850,7 +3057,13 @@ function bindInput() {
     if (input.leftDown && input.dragOrigin) {
       const dx = p.x - input.dragOrigin.x, dy = p.y - input.dragOrigin.y;
       const slop = touchMode ? TAP_SLOP_TOUCH : TAP_SLOP;
-      if (dx * dx + dy * dy > slop * slop) input.dragMoved = true;
+      if (!input.dragMoved && dx * dx + dy * dy > slop * slop) {
+        input.dragMoved = true;
+        // a press that became a drag was never a press on a button, and a
+        // lift that can no longer mean "go" lets its ring go
+        input.pressedCtl = null;
+        if (fx.release && fx.release.brokeAt === null) fx.release.brokeAt = uiClock;
+      }
     }
     if (game.phase !== 'command') return;
     if (Draw.active) {
@@ -2880,6 +3093,9 @@ function bindInput() {
 
   function pressUp(src) {
     input.leftDown = false;
+    input.pressedCtl = null;
+    // a ring still whole was answered by this lift; a broken one fades out
+    if (fx.release && fx.release.brokeAt === null) fx.release = null;
     if (game.phase === 'command' && Draw.active) {
       const p = toNative(src);
       let tap = !input.dragMoved;
@@ -2912,7 +3128,18 @@ function bindInput() {
     Sound.ensure(); Sound.resume();
     pressDown(ev, ev.button);
   });
-  window.addEventListener('mousemove', (ev) => pressMove(ev));
+  window.addEventListener('mousemove', (ev) => {
+    pressMove(ev);
+    const d = toDisplay(ev);
+    input.dx = d.x; input.dy = d.y; input.hovering = true;
+    syncCursor();
+  });
+  // off the edge of the window entirely: nothing on the glass is under it
+  window.addEventListener('mouseout', (ev) => {
+    if (ev.relatedTarget) return;
+    input.hovering = false;
+    syncCursor();
+  });
   window.addEventListener('mouseup', (ev) => {
     if (ev.button === 2) { input.rightDown = false; Draw.endErase(); return; }
     if (ev.button !== 0) return;
@@ -2994,6 +3221,8 @@ function layout() {
   screenCanvas.style.height = (NATIVE_H * scale / dpr) + 'px';
   screenCtx = screenCanvas.getContext('2d');
   screenCtx.imageSmoothingEnabled = false;
+  buildTypeScale(dpr);
+  rescaleGlass();
   /* BEGIN CRT PASS -- everything below models the glass, not the board. It
      runs on the scaled-up display canvas and never touches the palette. */
   // scanline overlay
@@ -3018,6 +3247,44 @@ function layout() {
   vg.fillStyle = grad;
   vg.fillRect(0, 0, NATIVE_W * scale, NATIVE_H * scale);
   /* END CRT PASS */
+}
+
+/* The freeze is a palette-bank swap, and a bank swap is something a 1981
+   board could stage: reprogram the bank on a raster interrupt and every
+   scanline below the split takes the other colors. So stopped time arrives
+   as a band of the night bank opening up and down from the row that
+   stopped it, whole tile rows at a time, and is complete in about 100ms.
+   Every pixel is still a palette entry; nothing fades. Only the entrance
+   is staged -- the phase flipped on the click, and a thaw snaps straight
+   back to the live bank, because showing the night colors over a running
+   board would say time is stopped when it is not.
+   Returns the band as [lo, hi) maze rows, or null when the whole board is
+   in one bank. */
+const SPLIT_TICKS = 6;
+function bankBand() {
+  if (game.phase !== 'command' || fx.skipEnter || reducedMotion()) return null;
+  const k = Math.min(1, fxT() / SPLIT_TICKS);
+  const row0 = Math.max(0, Math.min(MAZE_ROWS - 1, Math.floor(fx.origin.y / TILE)));
+  const half = Math.floor(k * Math.max(row0, MAZE_ROWS - 1 - row0));
+  const lo = row0 - half, hi = row0 + half + 1;
+  if (lo <= 0 && hi >= MAZE_ROWS) return null;
+  return { lo: Math.max(0, lo), hi: Math.min(MAZE_ROWS, hi) };
+}
+/* Paint something that exists in both banks. `paint(dim)` draws it in one
+   bank; mid-split it runs twice, the night bank under a clip of whole tile
+   rows, so the walls, the pellets on the board, the pellets punched back
+   over the orders and the grid pips all split on the same scanline and
+   never disagree with each other. */
+function splitBank(g, paint) {
+  const band = bankBand();
+  if (!band) { paint(game.phase === 'command'); return; }
+  paint(false);
+  g.save();
+  g.beginPath();
+  g.rect(0, (band.lo + HUD_TOP) * TILE, NATIVE_W, (band.hi - band.lo) * TILE);
+  g.clip();
+  paint(true);
+  g.restore();
 }
 
 function drawDots(g, color) {
@@ -3072,14 +3339,18 @@ function drawHUD(g) {
 
 function drawCommandOverlay(g) {
   const yOff = HUD_TOP * TILE;
-  // command grid pips at open-tile corners
-  g.fillStyle = PAL.grid;
-  for (let r = 0; r <= MAZE_ROWS; r++) {
-    for (let c = 0; c <= COLS; c++) {
-      const open = isOpen(c, r) || isOpen(c - 1, r) || isOpen(c, r - 1) || isOpen(c - 1, r - 1);
-      if (open) g.fillRect(c * TILE, r * TILE + yOff, 1, 1);
+  // command grid pips at open-tile corners: night-bank furniture, so they
+  // arrive with the split and not ahead of it
+  splitBank(g, (dim) => {
+    if (!dim) return;
+    g.fillStyle = PAL.grid;
+    for (let r = 0; r <= MAZE_ROWS; r++) {
+      for (let c = 0; c <= COLS; c++) {
+        const open = isOpen(c, r) || isOpen(c - 1, r) || isOpen(c, r - 1) || isOpen(c - 1, r - 1);
+        if (open) g.fillRect(c * TILE, r * TILE + yOff, 1, 1);
+      }
     }
-  }
+  });
   const blink = (uiFrame / 20 | 0) % 2 === 0;
 
   /* The order trails themselves are not drawn here. They belong to the
@@ -3124,15 +3395,15 @@ function hunterDrawOrder() {
 
 function drawPlayfield(g) {
   const yOff = HUD_TOP * TILE;
-  const frozen = game.phase === 'command';
-  // maze — frozen time swaps to the second palette bank rather than dimming
+  // maze — frozen time swaps to the second palette bank rather than dimming,
+  // split along a raster line while the swap is arriving (see splitBank)
   if (game.phase === 'flash') {
     const on = (game.flashT / 12 | 0) % 2 === 0;
     g.drawImage(on ? mazeLayerWhite : mazeLayer, 0, yOff);
   } else {
-    g.drawImage(frozen ? mazeLayerDim : mazeLayer, 0, yOff);
+    splitBank(g, dim => g.drawImage(dim ? mazeLayerDim : mazeLayer, 0, yOff));
   }
-  if (game.phase !== 'flash') drawDots(g, frozen ? PAL.dotDim : PAL.dot);
+  if (game.phase !== 'flash') splitBank(g, dim => drawDots(g, dim ? PAL.dotDim : PAL.dot));
   // fruit
   if (game.fruit) {
     g.drawImage(SPRITES.fruit[game.fruit.idx % SPRITES.fruit.length],
@@ -3179,21 +3450,17 @@ function drawPlayfield(g) {
     drawTextCentered(g, p.text, x, Math.max(0, p.y + yOff - (90 - p.t) / 6), p.color);
   });
   /* The message slot: the one place on the board where text belongs, the
-     same row the round-start banner uses. Everything routes through here. */
+     same row the round-start banner uses. Everything routes through here.
+     Frozen time says nothing here: the banner blanked a corridor of the
+     fruit lane in exactly the phase the player reads the maze hardest, and
+     the status pill up in the HUD says it better. The machine keeps its
+     voice for the moments that belong to the machine. */
   if (game.phase === 'ready') {
     drawMessage(g, 'READY!', PAL.yellow);
   } else if (game.phase === 'escaped') {
     drawMessage(g, 'TARGET ESCAPED', PAL.red);
   } else if (game.phase === 'gameover') {
     drawMessage(g, 'GAME  OVER', PAL.red);
-  } else if (game.phase === 'command') {
-    const stalled = stalledHunter();
-    if (stalled) {
-      // steady, not blinking: this is a demand, and it names the ghost
-      drawMessage(g, stalled.def.name + ' NEEDS ORDERS', PAL.white);
-    } else if ((uiFrame / 20 | 0) % 2 === 0) {
-      drawMessage(g, 'COMMAND', PAL.cyan);
-    }
   } else if (game.phase === 'play' && game.hint && game.tick < 1200
              && (uiFrame / 24 | 0) % 2 === 0) {
     drawMessage(g, 'GRAB A GHOST', PAL.peach);
@@ -3217,8 +3484,7 @@ function drawMessage(g, text, color) {
 /* ------------------------------ attract mode ---------------------------- */
 
 function drawAttract(g) {
-  const a = game.attract;
-  a.t++;
+  const a = game.attract;   // a.t advances on ticks, in frame()
   const cx = NATIVE_W / 2;
   if (a.t > (a.page === 2 ? 1400 : 520)) { a.page = (a.page + 1) % 3; a.t = 0; a.introStep = 0;
     if (a.page === 2) { startDemo(); } else { game.demo = false; buildMaze(); game.resetActors(); } }
@@ -3286,12 +3552,26 @@ function startDemo() {
 
 /* ------------------------------ main loop ------------------------------- */
 
+/* Presentation time. Every blink, pulse and flicker counts in uiFrame, and
+   it used to be "one per requestAnimationFrame" -- which is one per refresh,
+   so a 120Hz screen blinked twice as fast and the overdrive flicker became a
+   15Hz strobe. It is now read off the rAF timestamp at a fixed 60 per
+   second, whatever the glass refreshes at. uiClock is the same clock with
+   its fraction kept, for anything that animates rather than blinks. Neither
+   is simulation state: game.update never reads them. */
+const UI_HZ = 60;
 let uiFrame = 0;
+let uiClock = 0;
+let uiEpoch = null;
 let lastTime = 0, acc = 0;
 
 function frame(now) {
   requestAnimationFrame(frame);
-  uiFrame++;
+  if (typeof now !== 'number') now = performance.now();
+  if (uiEpoch === null) uiEpoch = now;
+  // never backwards, whatever order a browser delivers timestamps in
+  uiClock = Math.max(uiClock, (now - uiEpoch) * UI_HZ / 1000);
+  uiFrame = Math.floor(uiClock);
   if (!lastTime) lastTime = now;
   let dt = now - lastTime;
   lastTime = now;
@@ -3302,20 +3582,24 @@ function frame(now) {
   let steps = 0;
   while (acc >= TICK_MS && steps < 4) {
     acc -= TICK_MS; steps++;
+    // the attract pages turn on ticks, like everything else that keeps time
+    if (game.phase === 'attract') game.attract.t++;
     if (livePhases.includes(game.phase)) game.update();
     else if (game.phase === 'attract' && game.demo) {
       game.phase = 'play'; game.update();
       if (game.phase === 'play' || game.phase === 'command') game.phase = 'attract';
       else { startDemo(); }   // demo round ended somehow: restart it
     }
-    // popup decay runs on ticks regardless of phase
+    // popup decay and the capture shake run on ticks regardless of phase
     game.popups = game.popups.filter(p => --p.t > 0);
+    if (game.shakeT > 0) game.shakeT--;
   }
 
   render();
 }
 
 function render() {
+  hotFrame = null; hotFrameOpen = true;
   const g = nativeCtx;
   g.fillStyle = PAL.black;
   g.fillRect(0, 0, NATIVE_W, NATIVE_H);
@@ -3334,10 +3618,7 @@ function render() {
   /* BEGIN CRT PASS -- composite the finished frame onto the glass. */
   const sctx = screenCtx;
   let sx = 0, sy = 0;
-  if (game.shakeT > 0) {
-    game.shakeT--;
-    sx = ((uiFrame % 2) * 2 - 1) * scale;
-  }
+  if (game.shakeT > 0) sx = ((uiFrame % 2) * 2 - 1) * scale;
   sctx.fillStyle = PAL.black;
   sctx.fillRect(0, 0, screenCanvas.width, screenCanvas.height);
   sctx.imageSmoothingEnabled = false;
@@ -3364,7 +3645,7 @@ function render() {
       || (game.phase === 'attract' && game.demo)) {
     const ds = dotScratch.getContext('2d');
     ds.clearRect(0, 0, NATIVE_W, NATIVE_H);
-    drawDots(ds, game.phase === 'command' ? PAL.dotDim : PAL.dot);
+    splitBank(ds, dim => drawDots(ds, dim ? PAL.dotDim : PAL.dot));
     if (game.fruit) {
       ds.drawImage(SPRITES.fruit[game.fruit.idx % SPRITES.fruit.length],
         DEN_EXIT_X - 8, tcy(FRUIT_TILE.r) - 8 + HUD_TOP * TILE);
@@ -3375,16 +3656,94 @@ function render() {
         if (game.phase !== 'command' || h.state === 'dissolving') h.draw(ds, game);
       });
     }
+    /* The lifted cast throws its shadows here, under the pellets about to
+       come back: a shadow drawn with the actors would land on the food
+       around them, and the glass must never hide the board. */
+    if (game.phase === 'command') drawContactShadows(sctx, sx, sy);
+    /* The command layer ran in between and is allowed to smooth. A leak
+       from in there would resample the pellets on the way back up, and the
+       palette lock cannot see inside the layer to catch it -- so say it
+       again here, where it counts. */
+    sctx.imageSmoothingEnabled = false;
     sctx.drawImage(dotScratch, sx, sy, NATIVE_W * scale, NATIVE_H * scale);
-    if (game.phase === 'command') {
-      hunterDrawOrder().forEach((h, i) => {
-        if (h.state !== 'dissolving') drawHunterHi(sctx, sx, sy, h, i);
-      });
-      drawEvaderHi(sctx, sx, sy);   // the target sits on top of everything
-    }
+    drawLiftedCast(sctx, sx, sy);   // frozen, the cast rides on the glass
   }
 
+  drawGlassOver(sctx, sx, sy);   // readouts that must never be punched through
   drawHelpLayer(sctx);   // the ? chip and its manual float above everything
+  listenForPincer();
+  syncShell();
+  syncCursor();
+  hotFrame = null; hotFrameOpen = false;
+}
+
+/* The room around the cabinet. index.html owns every look -- the ring, the
+   ghost-colored light, the type -- and this only tells it what state the
+   game is in: frozen or not, blocked on an overdue ghost or not, whose
+   color the room should take, and the one live instruction line, which is
+   the most legible text a phone has because it is real type. The DOM is
+   touched only when that state changes, and never read back. Every access
+   is fenced: the page can be missing pieces (the test harness has no body
+   at all), and a shell that cannot be lit must never cost a frame. */
+const shell = { key: null };
+function syncShell() {
+  const frozen = game.phase === 'command';
+  const stalled = frozen ? stalledHunter() : null;
+  const sel = frozen ? game.hunters[Draw.selected] : null;
+  const verb = touchMode ? 'TAP' : 'CLICK';
+  const line = stalled ? stalled.def.name + ' NEEDS ORDERS'
+    : 'DRAG A GHOST · ' + verb + ' EMPTY MAZE TO RUN';
+  const key = frozen + '|' + !!stalled + '|' + (sel ? sel.color : '') + '|' + line;
+  if (key === shell.key) return;
+  shell.key = key;
+  try {
+    const body = document.body;
+    body.classList.toggle('frozen', frozen);
+    body.classList.toggle('blocked', !!stalled);
+    // the room keeps the last ghost's color on the way out, so the light
+    // fades rather than flashing to a default first
+    if (sel) body.style.setProperty('--accent', sel.color);
+    const live = document.getElementById('hint-live');
+    if (live && frozen) live.textContent = line;
+  } catch (e) {}
+}
+
+/* The pointer's own vocabulary, for a mouse: a hand over anything that
+   answers a click, an open hand over a ghost or an arrowhead you could
+   pick up, a closed one while you hold a route, the crosshair everywhere
+   else. The same questions pressDown asks, in the same order, but only the
+   pure ones -- Draw.pickAt would reselect and restack the pile just for
+   being hovered. Written to the page only when the answer changes. */
+let cursorNow = '';
+function pointerTarget() {
+  if (touchMode || !input.hovering) return { cursor: 'crosshair', hover: null };
+  const d = { x: input.dx, y: input.dy };
+  const px = d.x / scale, py = d.y / scale - HUD_TOP * TILE;
+  const hand = (hover) => ({ cursor: 'pointer', hover });
+  if (game.helpOpen) return inRect(d, helpUI.close) ? hand('close') : { cursor: 'crosshair', hover: null };
+  if (Draw.active) return { cursor: 'grabbing', hover: null };
+  if (inRect(d, helpUI.btn)) return hand('help');
+  if (game.phase === 'command') {
+    if (inRect(d, rosterUI.play)) return hand('play');
+    if (inRect(d, rosterUI.camp)) return hand('camp');
+    const slot = rosterUI.slots.find(s => inRect(d, s));
+    if (slot) {
+      const h = game.hunters[slot.i];
+      return h && h.isCommandable() ? hand('slot' + slot.i) : { cursor: 'crosshair', hover: null };
+    }
+    if (Draw.poolAt(px, py).length || Draw.tipAt(game, px, py)) return { cursor: 'grab', hover: null };
+  } else if (game.phase === 'play' && Draw.poolAt(px, py).length) {
+    return { cursor: 'grab', hover: null };
+  }
+  return { cursor: 'crosshair', hover: null };
+}
+function syncCursor() {
+  const t = pointerTarget();
+  // a held button owns the look until it lets go
+  input.hoverCtl = input.leftDown || input.rightDown ? null : t.hover;
+  if (t.cursor === cursorNow) return;
+  cursorNow = t.cursor;
+  try { screenCanvas.style.cursor = t.cursor; } catch (e) {}
 }
 
 /* BEGIN COMMAND LAYER ----------------------------------------------------
@@ -3395,6 +3754,307 @@ function render() {
    colors the hardware could never have produced. The contrast is the point,
    which is why the palette lock deliberately does not apply here.
 ------------------------------------------------------------------------- */
+
+/* ---- tokens ----
+   The glass has its own small palette, and it is named rather than typed
+   out at each call so the chrome reads as one designed surface instead of
+   seven slightly different blues. Ghost colors still come from the ghosts. */
+const TOKENS = {
+  ink:   '#ffffff',              // primary text
+  muted: '#8fa0c0',              // secondary text, labels
+  glass: 'rgba(8,12,28,0.88)',   // control fill
+  line:  '#5878ff',              // hairlines and rims
+  ok:    '#40ff88',              // ready, go
+  warn:  '#ffb040',              // overdue, blocked
+  alert: '#ff5060',              // refused
+  scrim: 'rgba(0,0,8,0.78)',     // behind a sheet: the machine, dimmed
+  onColor: '#0a0e1c',            // type set on a ghost color or a filled button
+  track:   'rgba(255,255,255,0.14)',  // the unlit part of a ring
+  specular: 'rgba(255,255,255,0.16)', // the hairline where light catches glass
+  shadow:  'rgba(0,0,6,0.7)',    // what a floating card casts
+  casing:  '#00000a',            // the dark edge a route is laid on, map-style
+  flare:   '#b8c8ff',            // a survey cross as the freeze wave passes it
+  wave:    '#c8dcff',            // the freeze wave's ring at its brightest
+  waveClear: 'rgba(200,220,255,0)',  // ...and either side of it
+  hover:   'rgba(255,255,255,0.08)',  // a control under a resting mouse
+  press:   'rgba(255,255,255,0.14)',  // ...and under a press
+};
+
+/* ---- type ----
+   The board speaks in 8x8 tiles; the glass speaks in real type. Sizes are
+   S-proportional so the layout holds its shape at every scale, but each
+   role carries a floor in CSS px -- because canvas px are device px, and a
+   floor written in those is 6 CSS px on a dpr-3 phone. Figures are set in
+   the monospace so a countdown never shuffles its neighbours; the rest is
+   the platform's own UI face.
+   k: size in native px (times scale); floor: CSS px; track: em; least:
+   how far below its floor a role may shrink to fit, in CSS px, where the
+   floor is a resting size rather than a limit -- a ghost's name rests at
+   12 CSS px, but on a dpr-3 phone EMBER at 12 is wider than its card. */
+const UI_SANS = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
+const UI_MONO = 'ui-monospace, Menlo, Consolas, monospace';
+const TYPE_ROLES = {
+  numeral: { k: 7,   floor: 15,   weight: 700, family: UI_MONO },  // big figures
+  badge:   { k: 4.4, floor: 10,   weight: 700, family: UI_MONO },  // a card's number
+  head:    { k: 6,   floor: 16,   weight: 700, family: UI_SANS, track: 0.04 },  // sheet titles
+  title:   { k: 4.6, floor: 12,   weight: 600, family: UI_SANS, track: 0.06, least: 10.5 },  // names
+  lead:    { k: 3.8, floor: 11,   weight: 600, family: UI_SANS },  // a rule's first line
+  caption: { k: 3.6, floor: 10.5, weight: 500, family: UI_SANS },  // status, labels
+  figure:  { k: 3.6, floor: 10.5, weight: 600, family: UI_MONO },  // small numbers
+  micro:   { k: 3.2, floor: 9,    weight: 500, family: UI_SANS },  // hints only
+};
+let uiDpr = 1;
+let TYPE = {};
+
+/* Canvas px for a size of k native px that never drops below floorCss CSS
+   px. Everything in the command layer that must stay legible goes through
+   this, not through bare scale. */
+function uiPx(k, floorCss) {
+  return Math.max(scale * k, floorCss * uiDpr);
+}
+
+/* Per layout(), not per frame: each role's resting size, its floor, and
+   every font string in between, so fitting text never builds strings. */
+function buildTypeScale(dpr) {
+  uiDpr = dpr || 1;
+  TYPE = {};
+  for (const name in TYPE_ROLES) {
+    const r = TYPE_ROLES[name];
+    const min = Math.ceil((r.least || r.floor) * uiDpr);
+    const max = Math.max(Math.ceil(r.floor * uiDpr), Math.round(uiPx(r.k, r.floor)));
+    const fonts = [], track = [];
+    for (let px = min; px <= max; px++) {
+      fonts[px] = r.weight + ' ' + px + 'px ' + r.family;
+      track[px] = r.track ? (r.track * px).toFixed(2) + 'px' : '0px';
+    }
+    TYPE[name] = { min, max, fonts, track, tracked: !!r.track };
+  }
+  /* The status pill lives in one HUD row, eight board pixels tall, and on
+     a small phone that row is barely eleven CSS px -- less than a caption
+     at its floor plus any glass round it. So the pill's words are sized
+     from the capsule the row can hold, not the other way round: a caption
+     where it fits, down to the micro floor where it does not. */
+  const box = pillBox();
+  for (const [name, like] of [['pillCap', 'caption'], ['pillFig', 'figure']]) {
+    const r = TYPE_ROLES[like];
+    const floor = Math.ceil(TYPE_ROLES.micro.floor * uiDpr);
+    const max = Math.max(floor, Math.min(TYPE[like].max, Math.round(box.h * 0.62)));
+    const min = Math.min(max, floor);
+    const fonts = [], track = [];
+    for (let px = min; px <= max; px++) {
+      fonts[px] = r.weight + ' ' + px + 'px ' + r.family;
+      track[px] = '0px';
+    }
+    TYPE[name] = { min, max, fonts, track, tracked: false };
+  }
+}
+
+/* The pill's capsule, at rest: centred in HUD row 2, and never taller than
+   the row less a hairline, whatever the caption's floor would like. The
+   maze's top wall is the next row down, and the glass may not touch it. */
+const PILL_ROW = 2;   // HUD row 2, native y 16-24: the empty one under the scores
+function pillBox() {
+  const S = scale;
+  const floorRoom = HUD_TOP * TILE * S - uiDpr;
+  const rowTop = PILL_ROW * TILE * S;
+  const h = Math.min(Math.max(S * 7, TYPE.caption.max + uiDpr * 7), floorRoom - rowTop);
+  return { top: rowTop + (TILE * S - h) / 2, h, floor: HUD_TOP * TILE * S };
+}
+
+/* `tight` sets a tracked role with no tracking: the last thing given up
+   at the floor, before a shorter word is. */
+function setRoleFont(ctx, T, px, tight) {
+  ctx.font = T.fonts[px];
+  if (T.tracked && 'letterSpacing' in ctx) ctx.letterSpacing = tight ? '0px' : T.track[px];
+}
+
+/* A role's resting size in canvas px -- for laying out around text. */
+function rolePx(role) { return TYPE[role].max; }
+
+/* Width of text set in a role at its resting size, without drawing it. */
+function roleWidth(ctx, text, role) {
+  const T = TYPE[role];
+  ctx.save();
+  setRoleFont(ctx, T, T.max);
+  const w = ctx.measureText(text).width;
+  ctx.restore();
+  return w;
+}
+
+/* Every word the glass prints goes through here. It tries the full text at
+   the role's size and shrinks a pixel at a time toward the floor; if that
+   still overflows maxW, the short label gets the same treatment; if even
+   that overflows, the short label is set at the floor anyway -- legibility
+   beats a tidy margin. A tracked role gives up its tracking at the floor
+   before it gives up a word: a name five letters long spends a whole
+   letter's width on air at a phone's floor size. `shortText` may be null,
+   one label, or a list of ever-shorter ones; an empty string last means
+   "leave it out" rather than print it over its neighbour. The fit is
+   judged with every digit read as 0, so a countdown ticking 8, 7, 1 never
+   flips the size under the player's eye. Alignment and baseline are the
+   caller's; font, spacing and fill are not left behind. Returns the width
+   drawn. Loops are bounded by the size range, so a measureText that
+   answers 0 simply fits first time. */
+function fitText(ctx, text, shortText, x, y, role, maxW, color) {
+  const T = TYPE[role];
+  ctx.save();
+  ctx.fillStyle = color;
+  let pick = null;
+  const tries = [text].concat(shortText === null || shortText === undefined ? [] : shortText);
+  for (let n = 0; n < tries.length && pick === null; n++) {
+    const probe = tries[n].replace(/[0-9]/g, '0');
+    for (let px = T.max; px >= T.min; px--) {
+      setRoleFont(ctx, T, px);
+      if (!maxW || ctx.measureText(probe).width <= maxW) { pick = tries[n]; break; }
+    }
+    if (pick === null && T.tracked) {
+      setRoleFont(ctx, T, T.min, true);
+      if (ctx.measureText(probe).width <= maxW) pick = tries[n];
+    }
+  }
+  if (pick === null) {
+    pick = tries[tries.length - 1];
+    setRoleFont(ctx, T, T.min, true);
+  }
+  ctx.fillText(pick, x, y);
+  const w = ctx.measureText(pick).width;
+  ctx.restore();
+  return w;
+}
+
+/* Words in the sans and figures in the mono, set as one line -- so ROUTE
+   stays the platform's face while 3.2s never shuffles its neighbours.
+   `variants` are ever-shorter alternatives, each a list of runs: { t, role,
+   color } for text, or { w, paint(ctx, x, y) } for a small fixed-width
+   mark. Every text run shrinks together a pixel at a time toward its floor
+   before the next variant is tried, measured with digits read as 0, the
+   way fitText does it; the last variant is set at the floor if nothing
+   fits. Measuring is separate from drawing so a caller can size a capsule
+   around the line first. Returns { runs, d, ws, w }: d px under resting
+   size, each run's advance, and the total. */
+function fitRuns(ctx, variants, maxW) {
+  const measure = (runs, d) => {
+    const ws = runs.map(r => {
+      if (r.t === undefined) return r.w;
+      const T = TYPE[r.role];
+      setRoleFont(ctx, T, Math.max(T.min, T.max - d));
+      return ctx.measureText(r.t.replace(/[0-9]/g, '0')).width;
+    });
+    return { ws, w: ws.reduce((a, b) => a + b, 0) };
+  };
+  ctx.save();
+  let pick = null;
+  for (let n = 0; n < variants.length && !pick; n++) {
+    const runs = variants[n];
+    let span = 0;
+    for (const r of runs) if (r.t !== undefined) span = Math.max(span, TYPE[r.role].max - TYPE[r.role].min);
+    for (let d = 0; d <= span; d++) {
+      const m = measure(runs, d);
+      if (!maxW || m.w <= maxW) { pick = { runs, d, ws: m.ws, w: m.w }; break; }
+    }
+  }
+  if (!pick) {
+    const runs = variants[variants.length - 1];
+    const m = measure(runs, Infinity);
+    pick = { runs, d: Infinity, ws: m.ws, w: m.w };
+  }
+  ctx.restore();
+  return pick;
+}
+/* Set a fitted line left to right from x; y is the caller's baseline. */
+function drawRuns(ctx, set, x, y) {
+  ctx.save();
+  ctx.textAlign = 'left';
+  set.runs.forEach((r, i) => {
+    if (r.t === undefined) { if (r.paint) r.paint(ctx, x, y); }
+    else {
+      const T = TYPE[r.role];
+      setRoleFont(ctx, T, Math.max(T.min, T.max - set.d));
+      ctx.fillStyle = r.color;
+      ctx.fillText(r.t, x, y);
+    }
+    x += set.ws[i];
+  });
+  ctx.restore();
+}
+function cap(t, color) { return { t, role: 'caption', color: color || TOKENS.muted }; }
+function num(t, color) { return { t, role: 'figure', color: color || TOKENS.ink }; }
+
+/* ---- the presentation clock ----
+   One clock for every entrance and exit on the glass, so nothing on it
+   ever runs to a separate beat. It reads uiClock (60 per second off the
+   rAF timestamp); the simulation never reads it, and freeze and resume
+   never wait for it -- the phase has already flipped by the time any of
+   this is asked. Headless, the clock moves only when a test drives
+   frame(), and by then it has been driven a long way -- so tests stamp
+   enterAt and thawAt relative to uiClock, never as bare numbers.
+     enterAt   uiClock when time last stopped
+     thawAt    uiClock when time last restarted (a refused PLAY is not one)
+     origin    what stopped it, native maze px
+     skipEnter the freeze came within FX_REFREEZE of a thaw: no entrance
+     refusedAt uiClock when PLAY last said no
+     release   a finger down on open floor, waiting to see if it lifts as a
+               tap: { x, y } native maze px, brokeAt uiClock when it slid
+               too far to mean "go" (null while it still can). Input writes
+               this one; it is a picture of input.pendingResume, nothing more */
+const FX_REFREEZE = 20;    // ticks
+const FX_SPRING = 13.2;    // ticks: ~220ms to settle
+const FX_EXIT = 8;         // ticks: exits leave faster than entrances arrive
+const fx = {
+  enterAt: -1e9, thawAt: -1e9, refusedAt: -1e9,
+  origin: { x: NATIVE_W / 2, y: MAZE_ROWS * TILE / 2 },
+  skipEnter: false,
+  release: null,
+};
+function fxT() { return Math.max(0, uiClock - fx.enterAt); }
+function fxThawT() { return Math.max(0, uiClock - fx.thawAt); }
+
+/* Underdamped: crosses its mark at ~80ms, overshoots by ~6% and is still
+   inside half a percent at 220ms, where it snaps home. t in ticks. */
+function springIn(t) {
+  if (reducedMotion() || t >= FX_SPRING) return 1;
+  if (t <= 0) return 0;
+  const z = 0.667, w = 0.635, root = Math.sqrt(1 - z * z), wd = w * root;
+  return 1 - Math.exp(-z * w * t) * (Math.cos(wd * t) + (z / root) * Math.sin(wd * t));
+}
+/* Exit progress 0..1, decelerating, over FX_EXIT ticks. */
+function easeOut(t) {
+  if (reducedMotion() || t >= FX_EXIT) return 1;
+  if (t <= 0) return 0;
+  const u = 1 - t / FX_EXIT;
+  return 1 - u * u * u;
+}
+/* The entrance as most things want it: sprung, or already home. */
+function fxIn() { return fx.skipEnter ? 1 : springIn(fxT()); }
+
+/* The release. Resume has already happened by the time any of this is
+   drawn -- phase flipped on the click -- so it all plays over live frames
+   and a freeze cancels it outright, simply by no longer being play. The
+   lifted shells fade into the pixel sprites on the exit curve; each order
+   is sent down its own line once. Reduced motion gets neither. */
+const TRANSMIT_TICKS = 12;
+function shellAlpha() {
+  if (game.phase === 'command') return 1;
+  if (game.phase !== 'play') return 0;
+  return 1 - easeOut(fxThawT());
+}
+// ticks into the transmit, or -1 when none is running
+function transmitT() {
+  if (game.phase !== 'play' || reducedMotion()) return -1;
+  const t = fxThawT();
+  return t < TRANSMIT_TICKS ? t : -1;
+}
+
+let reduceMotionMQ;
+function reducedMotion() {
+  try {
+    if (reduceMotionMQ === undefined) {
+      reduceMotionMQ = (window.matchMedia
+        && window.matchMedia('(prefers-reduced-motion: reduce)')) || null;
+    }
+    return !!(reduceMotionMQ && reduceMotionMQ.matches);
+  } catch (e) { return false; }
+}
 
 function orderPathPoints(tiles, closed, S, ox, oy) {
   // tile centres in display space, split into runs at tunnel seams
@@ -3410,8 +4070,9 @@ function orderPathPoints(tiles, closed, S, ox, oy) {
   return runs;
 }
 
-function strokeRuns(ctx, runs, width, color, alpha, dashOffset) {
+function strokeRuns(ctx, runs, width, color, alpha, dashOffset, op) {
   ctx.save();
+  if (op) ctx.globalCompositeOperation = op;
   ctx.strokeStyle = color;
   ctx.globalAlpha = alpha;
   ctx.lineWidth = width;
@@ -3590,6 +4251,238 @@ function drawHunterHi(ctx, ox, oy, h, idx) {
   ctx.restore();
 }
 
+/* ---- the freeze wave ----
+   Stopping time is something that happened somewhere -- under your finger,
+   at the ghost you grabbed, at the ghost that ran out of orders, at the ?
+   chip -- so the glass acknowledges it from there. One soft ring runs out
+   from that point to the far corner of the glass, and the survey grid is
+   laid down in its wake, each cross catching the light for a moment as
+   the front goes over it. The flare is a function of distance, so the
+   crosses are sorted into a few alpha bands and stroked once per band, not
+   tracked one by one. Everything here is under the orders and under the
+   punched-back board, and once the front has passed, the grid is exactly
+   the static grid it always was. A refreeze or reduced motion skips it. */
+const WAVE_TICKS = 16;                  // the ring reaches the far corner
+const WAVE_FLARE = 4;                   // ticks a cross stays lit behind it
+const WAVE_BANDS = [0.62, 0.46, 0.32];  // flare alphas, freshest first
+const GRID_ALPHA = 0.22;
+const WAVE_ALPHA = 0.35;
+function waveReach(t) {                 // 0..1 of the way out, decelerating
+  const k = Math.min(1, Math.max(0, t) / WAVE_TICKS);
+  return 1 - (1 - k) * (1 - k) * (1 - k);
+}
+/* Returns the band each open cross is stroked in this frame (0 settled,
+   1.. flaring, -1 not yet uncovered), for the tests; drawing is the point. */
+function surveyWave(S, ox, oy) {
+  const t = fxT();
+  const moving = !fx.skipEnter && !reducedMotion() && t < WAVE_TICKS + WAVE_FLARE;
+  const cx = fx.origin.x * S + ox, cy = (fx.origin.y + HUD_TOP * TILE) * S + oy;
+  const far = Math.hypot(Math.max(cx, NATIVE_W * S - cx), Math.max(cy, NATIVE_H * S - cy));
+  const R = moving ? far * waveReach(t) : Infinity;
+  const pts = [], bands = [];
+  for (let r = 0; r < MAZE_ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (!isOpen(c, r) || inDen(c, r)) continue;
+      const x = tcx(c) * S + ox, y = (tcy(r) + HUD_TOP * TILE) * S + oy;
+      let band = 0;
+      if (moving) {
+        const d = Math.hypot(x - cx, y - cy);
+        if (d > R) band = -1;            // the front has not got here yet
+        else {
+          // when the front crossed this distance: waveReach, inverted
+          const age = t - WAVE_TICKS * (1 - Math.cbrt(1 - Math.min(1, d / far)));
+          if (age < WAVE_FLARE) {
+            band = 1 + Math.min(WAVE_BANDS.length - 1,
+              Math.floor(Math.max(0, age) / WAVE_FLARE * WAVE_BANDS.length));
+          }
+        }
+      }
+      pts.push(x, y); bands.push(band);
+    }
+  }
+  return { moving, cx, cy, far, R, pts, bands };
+}
+function drawSurveyGrid(ctx, ox, oy) {
+  const S = scale;
+  const wv = surveyWave(S, ox, oy);
+  const open = wv.moving && wv.R < wv.far;   // the ring is still on the glass
+  const k = S * 0.9;
+  ctx.save();
+  if (open) {
+    // the front edge trims the arms of the crosses it is still uncovering
+    ctx.beginPath(); ctx.arc(wv.cx, wv.cy, wv.R, 0, Math.PI * 2); ctx.clip();
+  }
+  ctx.lineWidth = Math.max(1, S * 0.16);
+  for (let band = 0; band <= WAVE_BANDS.length; band++) {
+    let any = false;
+    ctx.beginPath();
+    for (let j = 0; j < wv.bands.length; j++) {
+      if (wv.bands[j] !== band) continue;
+      const x = wv.pts[2 * j], y = wv.pts[2 * j + 1];
+      ctx.moveTo(x - k, y); ctx.lineTo(x + k, y);
+      ctx.moveTo(x, y - k); ctx.lineTo(x, y + k);
+      any = true;
+    }
+    if (!any) continue;
+    ctx.globalAlpha = band ? WAVE_BANDS[band - 1] : GRID_ALPHA;
+    ctx.strokeStyle = band ? TOKENS.flare : TOKENS.line;
+    ctx.stroke();
+  }
+  ctx.restore();
+  if (open) {
+    // the ring itself: one soft band just inside the front, fading as it
+    // spreads, and gone by the time it has covered the glass
+    const inner = Math.max(0, wv.R - 4 * S), outer = wv.R + S;
+    const g = ctx.createRadialGradient(wv.cx, wv.cy, inner, wv.cx, wv.cy, outer);
+    g.addColorStop(0, TOKENS.waveClear);
+    g.addColorStop(0.7, TOKENS.wave);
+    g.addColorStop(1, TOKENS.waveClear);
+    ctx.save();
+    ctx.globalAlpha = WAVE_ALPHA * (1 - wv.R / wv.far);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(wv.cx, wv.cy, outer, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+/* ---- contact shadows ----
+   Frozen, the cast is lifted off the board into the glass, and a lifted
+   thing throws a shadow. Two small sprites baked once per scale -- one
+   for the cast at rest, one a little larger, softer and further down for
+   the selected ghost, which is how the glass says "held" without changing
+   the size of anything -- and blitted 1:1, a drawImage per actor. render()
+   lays them down before the pellets are punched back, so they darken the
+   trails under a ghost's hem and never the food beside it. */
+const SHADOW = { rest: null, held: null };
+const SHADOW_DROP = 6.2;   // native px below the actor's centre
+const SHADOW_LIFT = 0.8;   // the held ghost's extra drop, under 1S
+function bakeShadow(rx, ry, peak) {
+  const S = scale;
+  const w = Math.ceil(2 * rx * S) + 2, h = Math.ceil(2 * ry * S) + 2;
+  const cv = makeCanvas(w, h);
+  const g = cv.getContext('2d');
+  const rg = g.createRadialGradient(0, 0, 0, 0, 0, rx * S);
+  rg.addColorStop(0, 'rgba(0,0,6,1)');
+  rg.addColorStop(0.5, 'rgba(0,0,6,0.6)');
+  rg.addColorStop(1, 'rgba(0,0,6,0)');
+  g.globalAlpha = peak;
+  g.setTransform(1, 0, 0, ry / rx, w / 2, h / 2);   // a circle, squashed flat
+  g.fillStyle = rg;
+  g.beginPath(); g.arc(0, 0, rx * S, 0, Math.PI * 2); g.fill();
+  return cv;
+}
+function bakeShadows() {
+  SHADOW.rest = bakeShadow(6.5, 2.2, 0.5);
+  SHADOW.held = bakeShadow(7.6, 2.8, 0.4);
+}
+
+/* A new scale, from layout(): everything on the glass that was baked or
+   remembered in display px is now the wrong size. The shadows are baked
+   again, and the two things that ease from where they were last drawn --
+   the pill's width, the drag tag's place -- forget it and snap, rather
+   than spring from a size that no longer exists (a pill springing up
+   from two-thirds its width clips its own words on the way). */
+function rescaleGlass() {
+  bakeShadows();
+  plateShadows.clear();
+  pillAnim.at = -Infinity;   // older than any freeze: the next draw snaps
+  tagAnim.on = false;
+}
+function drawContactShadows(ctx, ox, oy) {
+  if (game.phase !== 'command' || !SHADOW.rest) return;
+  const a = Math.min(1, fxIn());
+  if (a <= 0) return;
+  const S = scale;
+  const put = (spr, x, y) => ctx.drawImage(spr,
+    Math.round(x * S + ox - spr.width / 2),
+    Math.round((y + HUD_TOP * TILE) * S + oy - spr.height / 2));
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = a;
+  game.hunters.forEach((h, i) => {
+    // bare eyes walking home have no body to cast one
+    if (h.state === 'dissolving' || h.state === 'eyes' || h.state === 'enteringDen') return;
+    const held = i === Draw.selected;
+    put(held ? SHADOW.held : SHADOW.rest, h.x, h.y + SHADOW_DROP + (held ? SHADOW_LIFT : 0));
+  });
+  const e = game.evader;
+  if (e && e.alive) put(SHADOW.rest, e.x, e.y + SHADOW_DROP);
+  ctx.restore();
+}
+
+/* Frozen, the cast is lifted into the glass. For a few frames after a
+   thaw the lifted shells stay on, at the live positions, fading out over
+   the pixel sprites already moving underneath -- they peel off rather than
+   cut. The game is not waiting for them; it is running. The fade is why
+   this lives in here and not in render(): an alpha belongs to the glass. */
+function drawLiftedCast(ctx, ox, oy) {
+  const lifted = shellAlpha();
+  if (lifted <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = lifted;
+  hunterDrawOrder().forEach((h, i) => {
+    if (h.state !== 'dissolving') drawHunterHi(ctx, ox, oy, h, i);
+  });
+  drawEvaderHi(ctx, ox, oy);   // the target sits on top of everything
+  ctx.restore();
+}
+
+/* Every route on the glass, read once and in stacking order: the selected
+   ghost's on top, and the route in hand above even that. Each keeps its
+   hunter index `i`, because the pincer beads are keyed by it and the
+   stacking order is not the roster order. */
+function routeOrder(S, ox, oy) {
+  const routes = game.hunters.map((h, i) => {
+    const drawing = !!(Draw.active && Draw.active.hunter === h);
+    let tiles = null, closed = false;
+    if (drawing) { tiles = Draw.active.tiles; }
+    else if (h.path) {
+      closed = h.path.closed;
+      tiles = closed ? h.path.tiles : h.path.tiles.slice(Math.max(0, h.path.idx - 1));
+    }
+    if (!tiles || tiles.length < 1) return null;
+    return { h, i, drawing, tiles, closed,
+      walk: closed ? tiles.concat([tiles[0]]) : tiles,
+      runs: orderPathPoints(tiles, closed, S, ox, oy) };
+  });
+  const order = hunterDrawOrder().map(h => routes[game.hunters.indexOf(h)]).filter(Boolean);
+  const inHand = order.findIndex(o => o.drawing);
+  if (inHand >= 0) order.push(order.splice(inHand, 1)[0]);
+  return order;
+}
+
+/* The order going out: one short bright comet from the ghost down the
+   line it was given, arriving at the arrowhead as the transmit ends (a
+   patrol gets one lap, from wherever the ghost is on it). Rides pointAlong
+   over the same tiles the trail is drawn from, so it can only ever run
+   along an order that exists. k is 0..1 through the transmit. */
+function drawTransmit(ctx, h, S, ox, oy, k, w) {
+  const p = h.path;
+  const s0 = Math.max(0, p.idx - 1);
+  const walk = p.closed ? p.tiles.slice(s0).concat(p.tiles.slice(0, s0), [p.tiles[s0]])
+    : p.tiles.slice(s0);
+  if (walk.length < 2) return;
+  const total = (walk.length - 1) * TILE;
+  const head = total * (1 - (1 - k) * (1 - k));   // leaves fast, lands soft
+  const tail = Math.max(0, head - TILE * 1.5);
+  const runs = [];
+  let cur = [], prev = null;
+  for (let d = tail; ; d = Math.min(head, d + TILE / 4)) {
+    const q = pointAlong(walk, d);
+    if (q) {
+      // the tunnel seam: the comet leaves one edge and comes in the other
+      if (prev && Math.abs(q.x - prev.x) + Math.abs(q.y - prev.y) > TILE) { runs.push(cur); cur = []; }
+      cur.push({ x: q.x * S + ox, y: (q.y + HUD_TOP * TILE) * S + oy });
+      prev = q;
+    }
+    if (d >= head) break;
+  }
+  runs.push(cur);
+  const a = Math.min(1, (1 - k) / 0.4);   // full until it nears the end
+  strokeRuns(ctx, runs, w * 3, h.color, 0.45 * a, null);
+  strokeRuns(ctx, runs, w * 1.1, TOKENS.ink, 0.95 * a, null);
+}
+
 function drawOrderLayer(ctx, ox, oy) {
   /* The attract demo also shows the orders -- the arrows converging on him
      are the pitch -- but at live-play brightness only: frozen stays gated on
@@ -3605,42 +4498,26 @@ function drawOrderLayer(ctx, ox, oy) {
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
 
-  if (frozen) {
-    // a faint survey grid over the corridors, drawn as hairlines
-    ctx.save();
-    ctx.globalAlpha = 0.22;
-    ctx.strokeStyle = '#5878ff';
-    ctx.lineWidth = Math.max(1, S * 0.16);
-    ctx.beginPath();
-    for (let r = 0; r < MAZE_ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        if (!isOpen(c, r) || inDen(c, r)) continue;
-        const x = tcx(c) * S + ox, y = (tcy(r) + HUD_TOP * TILE) * S + oy;
-        const k = S * 0.9;
-        ctx.moveTo(x - k, y); ctx.lineTo(x + k, y);
-        ctx.moveTo(x, y - k); ctx.lineTo(x, y + k);
-      }
-    }
-    ctx.stroke();
-    ctx.restore();
-  }
+  if (frozen) drawSurveyGrid(ctx, ox, oy);
 
-  const hot = computeHotBeads(game);
+  const hot = hotBeadsNow();
   const spacing = Math.max(2, game.params.hunterSpeed * BEAD_TICKS);
+  const w = Math.max(2, S * 0.85);
+  /* Just after a thaw the trails come down from frozen brightness to live
+     over the transmit, rather than dropping to half on the click. */
+  const sendT = transmitT();
+  const sendK = sendT < 0 ? 1 : sendT / TRANSMIT_TICKS;
+  const bright = frozen ? 1 : 0.5 + 0.5 * (1 - sendK) * (1 - sendK);
+  const order = routeOrder(S, ox, oy);
 
-  game.hunters.forEach((h, i) => {
-    const drawing = Draw.active && Draw.active.hunter === h;
-    let tiles = null, closed = false;
-    if (drawing) { tiles = Draw.active.tiles; }
-    else if (h.path) {
-      closed = h.path.closed;
-      tiles = closed ? h.path.tiles : h.path.tiles.slice(Math.max(0, h.path.idx - 1));
-    }
-    if (!tiles || tiles.length < 1) return;
-
-    const runs = orderPathPoints(tiles, closed, S, ox, oy);
-    const w = Math.max(2, S * 0.85);
-    const bright = frozen ? 1 : 0.5;
+  /* Pass one: the lines. Every trail is additive, so two crossing routes
+     used to sum to a white smear exactly where you most need to tell them
+     apart. Frozen, each is laid on a dark casing first, the way a map lays
+     a road on its outline, and the one drawn later cuts cleanly across the
+     one below. Live play keeps its half-bright additive trails as they
+     were: the casing is a planning aid, and it goes with the planning. */
+  order.forEach(({ h, tiles, closed, runs, drawing }) => {
+    if (frozen) strokeRuns(ctx, runs, w * 3.2, TOKENS.casing, 0.55, null, 'source-over');
 
     // the coast past the end of an open order
     if (!closed) {
@@ -3656,10 +4533,16 @@ function drawOrderLayer(ctx, ox, oy) {
     strokeRuns(ctx, runs, w * 2.2, h.color, 0.26 * bright, null);
     strokeRuns(ctx, runs, w, h.color, 0.9 * bright, null);
     strokeRuns(ctx, runs, w * 0.5, '#ffffff', 0.5 * bright, -flow * 2.6);
+    if (sendT >= 0 && h.path && !drawing) drawTransmit(ctx, h, S, ox, oy, sendK, w);
+  });
 
+  /* Pass two: the marks. Beads, heads, arrowheads and rings all go down
+     after every casing, so a later route's dark edge can never swallow an
+     earlier route's white pincer bead -- the one mark that says two
+     ghosts will be in the same place at the same time. */
+  order.forEach(({ h, i, drawing, closed, walk, runs }) => {
     // leading edge: a bright head that runs along the route
     if (frozen && runs.length) {
-      const walk = closed ? tiles.concat([tiles[0]]) : tiles;
       const total = (walk.length - 1) * TILE;
       const headPos = (uiFrame * 1.6) % Math.max(total, 1);
       const p = pointAlong(walk, headPos);
@@ -3677,7 +4560,6 @@ function drawOrderLayer(ctx, ox, oy) {
     }
 
     // timing beads
-    const walk = closed ? tiles.concat([tiles[0]]) : tiles;
     const hotSet = hot[i] && hot[i].hot;
     for (let k = 1; k <= 80; k++) {
       const p = pointAlong(walk, k * spacing);
@@ -3749,14 +4631,25 @@ function drawOrderLayer(ctx, ox, oy) {
 
   ctx.restore();
 
-  if (frozen) drawRoster(ctx, ox, oy);
+  /* The glass furniture. Frozen, it is live and hit-testable; for a few
+     ticks after a thaw it is only a picture of itself dropping away over
+     play that is already running -- pressDown reads no roster outside
+     command, so a click in that window freezes exactly as it always has. */
+  if (frozen) {
+    drawRoster(ctx, ox, oy, false);
+    drawStatusPill(ctx, ox, oy, false);
+  } else if (game.phase === 'play' && fxThawT() < FX_EXIT) {
+    drawRoster(ctx, ox, oy, true);
+    drawStatusPill(ctx, ox, oy, true);
+  }
 }
 
 /* The roster. Four ghosts can end up standing on the same tile, and then a
    click can only ever reach one of them -- so each has a permanent number
-   and a button down here. Clicking a name selects that ghost and floats it
+   and a card down here. Clicking a card selects that ghost and floats it
    to the front of the pile; the PLAY button unfreezes without the keyboard.
-   Slot rectangles are stored each frame for the mousedown hit test. */
+   Rects are stored each frame for the mousedown hit test, and always where
+   the card comes to rest: the cards move, the targets never do. */
 const rosterUI = { slots: [], play: null, camp: null };
 
 function plate(ctx, x, y, w, h, r) {
@@ -3769,7 +4662,240 @@ function plate(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-function drawRoster(ctx, ox, oy) {
+/* A plate's shadow, baked. The canvas redraws every frame while frozen,
+   and a live shadowBlur is a fresh Gaussian over an arbitrary path each
+   time -- on a phone that rasterises shadows on the CPU, seven of them a
+   frame is real money spent in exactly the phase the player is dragging.
+   So each shadow is blurred once per scale and blitted after that. A
+   rounded plate's shadow is the same all along its straight middle, so
+   one bake of a short plate serves every width: its two ends, and one
+   column of the middle stretched between them -- which is how the pill
+   and the tag, whose widths spring, still cost one bake each. A plate
+   too short to have a middle is baked whole, at its own width.
+   Only the shadow is kept: the plate is drawn a canvas-width off to the
+   side and its shadow thrown back in, cast by the same fill so a
+   translucent plate throws the same fainter shadow it always did. */
+const plateShadows = new Map();   // emptied by layout(); scale is in the blur
+function plateShadow(w, h, r, blur, fill) {
+  const m = Math.ceil(blur * 1.5) + 1;   // three sigma: all of it
+  const K = Math.ceil(r + m);            // an end, and a sigma-proof margin past it
+  const whole = w < 2 * K + 1;
+  const bw = whole ? Math.ceil(w) : 2 * K + 1;
+  const key = (whole ? bw : 's') + '|' + Math.ceil(h) + '|' + r + '|' + blur + '|' + fill;
+  let cv = plateShadows.get(key);
+  if (!cv) {
+    if (plateShadows.size > 64) plateShadows.clear();   // a runaway, not a working set
+    cv = makeCanvas(bw + 2 * m, Math.ceil(h) + 2 * m);
+    const g = cv.getContext('2d');
+    const off = cv.width + 8;
+    g.shadowColor = TOKENS.shadow;
+    g.shadowBlur = blur;
+    g.shadowOffsetX = off;
+    plate(g, m - off, m, bw, h, r);
+    g.fillStyle = fill;
+    g.fill();
+    plateShadows.set(key, cv);
+  }
+  return { cv, m, K, whole };
+}
+function drawPlateShadow(ctx, x, y, w, h, r, blur, fill) {
+  const s = plateShadow(w, h, r, blur, fill);
+  const cv = s.cv, m = s.m, K = s.K, H = cv.height;
+  if (s.whole) { ctx.drawImage(cv, x - m, y - m); return; }
+  const cap = m + K;
+  ctx.drawImage(cv, 0, 0, cap, H, x - m, y - m, cap, H);
+  ctx.drawImage(cv, cap, 0, 1, H, x + K, y - m, w - 2 * K, H);
+  ctx.drawImage(cv, cap + 1, 0, cap, H, x + w - K, y - m, cap, H);
+}
+
+/* Glass as a card wears it: a flat fill, a soft shadow under it, and one
+   device-thin hairline along the top edge where light would catch. No
+   sampled frost -- in command the strip behind the cards is black, and
+   frosting black is a lot of work to arrive at black. `lift` is in native
+   px; a lifted card casts a longer, softer shadow. `shade` overrides the
+   shadow as { blur, dy } in native px, for a plate with little room under
+   it. */
+function glassPlate(ctx, x, y, w, h, r, lift, fill, shade) {
+  const S = scale;
+  const f = fill || TOKENS.glass;
+  const blur = S * (shade ? shade.blur : 2.5 + lift * 1.5);
+  const dy = S * (shade ? shade.dy : 0.6 + lift * 0.8);
+  drawPlateShadow(ctx, x, y + dy, w, h, r, blur, f);
+  ctx.save();
+  plate(ctx, x, y, w, h, r);
+  ctx.fillStyle = f;
+  ctx.fill();
+  ctx.restore();
+  ctx.save();
+  ctx.strokeStyle = TOKENS.specular;
+  ctx.lineWidth = uiDpr;
+  ctx.beginPath();
+  ctx.moveTo(x + r * 0.8, y + uiDpr);
+  ctx.lineTo(x + w - r * 0.8, y + uiDpr);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* Every control on the glass has three looks: at rest, under a resting
+   mouse (a little lighter, its rim brighter), and pressed (lighter still,
+   drawn 3% smaller about its centre). Only the picture changes -- the rect
+   it is hit-tested by stays where it is. Hover is a courtesy to the mouse
+   and says nothing a finger needs; a press that turns into a drag drops
+   its look, because it was never a press on a button. */
+const PRESS_SCALE = 0.97;
+function ctlLook(id) {
+  const pressed = input.pressedCtl === id;
+  return { pressed, hover: !pressed && !touchMode && input.hoverCtl === id };
+}
+function pressIn(ctx, look, cx, cy) {
+  if (!look.pressed) return;
+  ctx.translate(cx, cy);
+  ctx.scale(PRESS_SCALE, PRESS_SCALE);
+  ctx.translate(-cx, -cy);
+}
+function ctlTint(ctx, look, x, y, w, h, r) {
+  if (!look.hover && !look.pressed) return;
+  ctx.save();
+  plate(ctx, x, y, w, h, r);
+  ctx.fillStyle = look.pressed ? TOKENS.press : TOKENS.hover;
+  ctx.fill();
+  ctx.restore();
+}
+
+/* PLAY's two faces, also drawn small on a finger's release ring: the
+   triangle (t its half-height) and the padlock it becomes while a ghost
+   is overdue (u its unit: S on the button). Fill and stroke are the
+   caller's. */
+function playGlyph(ctx, cx, cy, t) {
+  ctx.beginPath();
+  ctx.moveTo(cx - t * 0.7, cy - t);
+  ctx.lineTo(cx + t * 1.05, cy);
+  ctx.lineTo(cx - t * 0.7, cy + t);
+  ctx.closePath();
+  ctx.fill();
+}
+function padlockGlyph(ctx, cx, cy, u) {
+  // a shackle over a body
+  ctx.lineWidth = Math.max(1.5 * uiDpr, u * 0.7);
+  ctx.beginPath();
+  ctx.arc(cx, cy - u * 0.8, u * 1.5, Math.PI, Math.PI * 2);
+  ctx.lineTo(cx + u * 1.5, cy);
+  ctx.moveTo(cx - u * 1.5, cy);
+  ctx.lineTo(cx - u * 1.5, cy - u * 0.8);
+  ctx.stroke();
+  plate(ctx, cx - u * 2.3, cy - u * 0.3, u * 4.6, u * 3.6, u * 0.6);
+  ctx.fill();
+}
+
+/* Cards rise out of the bezel on the shared spring, a beat apart from left
+   to right; after a thaw they drop away faster than they came, over play
+   that is already running. n is the card's place in the stagger.
+   -> { a: opacity 0..1, dy: display px below the resting place } */
+const CARD_RISE = 5;        // native px travelled
+const CARD_STAGGER = 1.5;   // ticks between neighbours
+function cardMotion(n, leaving) {
+  if (leaving) {
+    const e = easeOut(fxThawT());
+    return { a: 1 - e, dy: e * CARD_RISE * scale };
+  }
+  const k = fx.skipEnter ? 1 : springIn(fxT() - n * CARD_STAGGER);
+  return { a: Math.min(1, Math.max(0, k)), dy: (1 - k) * CARD_RISE * scale };
+}
+
+function secs(ticks) { return (ticks / 60).toFixed(1) + 's'; }
+
+/* What a card says about its ghost: a state dot, one figure that matters,
+   and a ring round the badge that means exactly one thing in that state --
+   or no ring, where nothing is counting. Every figure is read off the
+   fields and rules the simulation itself runs on.
+     dot    state color        ring  { frac 0..1, color } or null
+     lines  fitRuns variants   look  portrait look: 'fright' | 'eyes' | 'boost'
+     mark   badge glyph in place of the number, overdue    down  greyed out */
+function cardState(h) {
+  const T = TOKENS;
+  const look = h.state === 'active' && game.frightT > 0 && !h.frightImmune ? 'fright'
+    : h.boostT > 0 ? 'boost' : null;
+  if (!h.isCommandable() || h.state === 'enteringDen') {
+    // eaten: the walk home has no clock worth quoting
+    return { dot: T.muted, down: true, ring: null, look: 'eyes',
+      lines: [[cap('HEADING HOME')], [cap('HOME')]] };
+  }
+  if (h.state === 'respawn') {
+    const s = secs(h.respawnT);
+    return { dot: T.muted, down: true, look,
+      ring: { frac: h.respawnT / game.params.respawnTicks, color: T.muted },
+      lines: [[cap('BACK IN '), num(s)], [num(s)]] };
+  }
+  if (h.state === 'idle') {
+    const s = secs(h.releaseT);
+    return { dot: T.muted, down: true, look,
+      ring: { frac: h.releaseT / Math.max(1, h.releaseFrom), color: T.muted },
+      lines: [[cap('OUT IN '), num(s)], [num(s)]] };
+  }
+  if (h.state !== 'active') {
+    return { dot: T.muted, ring: null, look,
+      lines: [[cap('LEAVING DEN')], [cap('LEAVING')], [cap('EXIT')]] };
+  }
+  if (h.overdue && !h.path && !h.dir) {
+    // a white pill with a red edge: an alarm that can never be read as RAZE
+    return { overdue: true, dot: T.alert, mark: '!', look,
+      ring: { frac: 1, color: T.warn },
+      lines: [[cap('NEEDS ORDERS', T.onColor)], [cap('ORDERS', T.onColor)], [cap('!', T.onColor)]] };
+  }
+  if (h.boostT > 0) {
+    const s = secs(h.boostT);
+    return { dot: T.ink, look, ring: { frac: h.boostT / BOOST_TICKS, color: T.ink },
+      lines: [[cap('OVERDRIVE '), num(s)], [cap('BOOST '), num(s)], [num(s)]] };
+  }
+  if (h.path) {
+    const p = h.path;
+    const progress = { frac: p.idx / p.tiles.length, color: T.ok };
+    if (p.closed) {
+      const s = secs(orderTicks(h, p.tiles, 0, true));
+      return { dot: T.ok, look, ring: progress, lines: [[cap('LOOP '), num(s)], [num(s)]] };
+    }
+    const s = secs(orderTicks(h, p.tiles, p.idx, false));
+    return { dot: T.ok, look, ring: progress, lines: [[cap('ROUTE '), num(s)], [num(s)]] };
+  }
+  if (h.dir) {
+    // the wall-stop rule, counted in tiles while it can still be undone
+    const n = driftTiles(h.tile(), h.dir).length;
+    const unit = n === 1 ? ' TILE' : ' TILES';
+    return { dot: T.muted, ring: null, look,
+      lines: n === 0 ? [[cap('STOPPING')], [cap('STOP')]]
+        : [[cap('STOPS IN '), num(String(n)), cap(unit)], [num(String(n)), cap(unit)], [num(String(n))]] };
+  }
+  if (game.campLimit === null) {
+    // the limit is OFF: nothing is counting, so nothing pretends to
+    return { dot: T.muted, ring: null, look, lines: [[cap('CAMPED')], [cap('CAMP')]] };
+  }
+  const left = Math.max(0, game.campLimit - h.campT);
+  const late = left <= 120;
+  const s = Math.ceil(left / 60) + 's';
+  return { dot: late ? T.warn : T.muted, look,
+    ring: { frac: game.campLimit > 0 ? left / game.campLimit : 0, color: late ? T.warn : T.ink },
+    lines: [[num(s), cap(' LEFT')], [num(s)]] };
+}
+
+/* A ring that counts: the unlit track all the way round, then the part
+   still to go, clockwise from twelve. */
+function countRing(ctx, x, y, r, w, ring) {
+  ctx.save();
+  ctx.lineWidth = w;
+  ctx.strokeStyle = TOKENS.track;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+  if (ring && ring.frac > 0.001) {
+    const f = Math.min(1, ring.frac);
+    ctx.strokeStyle = ring.color;
+    ctx.lineCap = f < 1 ? 'round' : 'butt';
+    ctx.beginPath();
+    ctx.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * f);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawRoster(ctx, ox, oy, leaving) {
   const S = scale;
   const h0 = S * 13;
   const gap = S * 2;
@@ -3778,122 +4904,586 @@ function drawRoster(ctx, ox, oy) {
   const total = slotW * 4 + gap * 4 + playW;
   const x0 = (NATIVE_W * S - total) / 2 + ox;
   const y = (HUD_TOP * TILE + MAZE_ROWS * TILE + HUD_BOT * TILE) * S + oy - h0 - S * 1.5;
-  rosterUI.slots = [];
+  // on the way out the cards are only pictures: the last resting rects stand
+  if (!leaving) rosterUI.slots = [];
   ctx.save();
   ctx.textBaseline = 'middle';
+  /* Name over metric, centred as a pair on their cap heights. A CSS floor
+     can make the type taller than the S-proportional strip was drawn for,
+     so the pair is placed from the sizes actually in use, not from S --
+     and where the floors crowd the strip, the gap between the lines gives
+     way before the lines leave the glass. */
+  const capT = rolePx('title') * 0.7, capC = rolePx('caption') * 0.7;
+  const lead = Math.max(uiDpr, Math.min(Math.max(S * 1.5, rolePx('caption') * 0.3),
+    h0 - S * 2 - capT - capC));
+  const top = (h0 - capT - lead - capC) / 2;
+  const nameDY = top + capT / 2, statusDY = top + capT + lead + capC / 2;
+
+  /* The badge fills the card's height, less a margin; the digit sets its
+     size where the floor wins, and the ring sits just outside it. */
+  const ringW = Math.max(1.5 * uiDpr, S * 0.55);
+  const ringGap = Math.max(uiDpr, S * 0.45);
+  const rOut = h0 / 2 - ringW / 2 - Math.max(uiDpr, S * 0.9);
+  const rb = Math.min(Math.max(S * 3.4, rolePx('badge') * 0.62), rOut - ringW / 2 - ringGap);
+  const rr = rb + ringW / 2 + ringGap;
+  const bxOff = S * 1.4 + rr;
+  const txOff = bxOff + rr + S * 2;
+  const dotR = Math.max(1.5 * uiDpr, S * 0.7);
+  const dotGap = Math.max(2 * uiDpr, S);
+  /* The portrait is a luxury: it stays only while the longest full metric
+     still fits beside it, decided for the whole row at once so no card
+     gains or loses a face as its state changes. */
+  const portW = S * 8;
+  const widest = roleWidth(ctx, 'STOPS IN ', 'caption') + roleWidth(ctx, '00', 'figure')
+    + roleWidth(ctx, ' TILES', 'caption') + dotR * 2 + dotGap;
+  const portrait = slotW - txOff - portW >= widest;
+  const textW = slotW - txOff - (portrait ? portW : S * 2);
 
   game.hunters.forEach((h, i) => {
     const x = x0 + i * (slotW + gap);
-    const selected = Draw.selected === i;
-    const commandable = h.isCommandable();
-    const busy = !!h.path;
-    rosterUI.slots.push({ x, y, w: slotW, h: h0, i });
+    if (!leaving) rosterUI.slots.push({ x, y, w: slotW, h: h0, i });
+    const m = cardMotion(i + 1, leaving);
+    if (m.a <= 0.01) return;
+    const selected = Draw.selected === i && !leaving;
+    const st = cardState(h);
+    const lift = selected ? 1 : 0;
+    const yc = y + m.dy - lift * S;
+    const cy = yc + h0 / 2;
+    const look = ctlLook('slot' + i);
 
-    // glass plate with a glowing edge in the ghost's colour
     ctx.save();
-    ctx.globalAlpha = commandable ? 1 : 0.35;
-    plate(ctx, x, y, slotW, h0, S * 2.5);
-    ctx.fillStyle = 'rgba(8,12,28,0.88)';
-    ctx.fill();
-    if (selected) {
-      ctx.shadowColor = h.color;
-      ctx.shadowBlur = S * 4;
-    }
-    ctx.strokeStyle = h.color;
-    ctx.globalAlpha = (commandable ? 1 : 0.35) * (selected ? 1 : 0.45);
-    ctx.lineWidth = Math.max(1, S * (selected ? 0.7 : 0.4));
-    plate(ctx, x, y, slotW, h0, S * 2.5);
+    ctx.globalAlpha = m.a * (st.down ? 0.55 : 1);
+    pressIn(ctx, look, x + slotW / 2, cy);
+    glassPlate(ctx, x, yc, slotW, h0, S * 2.5, lift);
+    ctlTint(ctx, look, x, yc, slotW, h0, S * 2.5);
+    // the rim: the chosen ghost's own color, everyone else a quiet hairline
+    ctx.save();
+    ctx.strokeStyle = selected ? h.color : TOKENS.line;
+    ctx.globalAlpha *= selected ? 1 : look.hover ? 0.8 : 0.3;
+    ctx.lineWidth = selected ? Math.max(1.5 * uiDpr, S * 0.5) : uiDpr;
+    plate(ctx, x, yc, slotW, h0, S * 2.5);
     ctx.stroke();
     ctx.restore();
 
-    ctx.globalAlpha = commandable ? 1 : 0.35;
-    // number badge
-    ctx.font = 'bold ' + Math.round(S * 7) + 'px ui-monospace, Menlo, Consolas, monospace';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = selected ? '#ffffff' : h.color;
-    ctx.fillText(String(i + 1), x + S * 6, y + h0 / 2 + S * 0.3);
-
-    ctx.font = 'bold ' + Math.round(S * 4.6) + 'px ui-monospace, Menlo, Consolas, monospace';
-    ctx.textAlign = 'left';
+    // badge: the ghost's color, its number (or the overdue mark), its ring
+    const bx = x + bxOff;
+    countRing(ctx, bx, cy, rr, ringW, st.ring);
     ctx.fillStyle = h.color;
-    ctx.fillText(h.def.name, x + S * 12, y + h0 * 0.34);
+    ctx.beginPath(); ctx.arc(bx, cy, rb, 0, Math.PI * 2); ctx.fill();
+    ctx.textAlign = 'center';
+    fitText(ctx, st.mark || String(i + 1), null, bx, cy + S * 0.2, 'badge', rb * 1.5, TOKENS.onColor);
 
-    ctx.font = Math.round(S * 3.6) + 'px ui-monospace, Menlo, Consolas, monospace';
-    const camped = commandable && !busy && !h.dir;
-    const stallPulse = (uiFrame / 12 | 0) % 2 === 0;
-    ctx.globalAlpha = commandable ? (h.overdue && stallPulse ? 1 : 0.8) : 0.3;
-    ctx.fillStyle = h.overdue ? (stallPulse ? '#ffffff' : '#ffb040')
-      : busy ? '#ffffff' : '#7c8cb0';
-    /* A camped ghost shows its clock counting down to intervention -- or
-       just CAMPED, contentedly, when the limit is OFF. */
-    const campLeft = game.campLimit !== null
-      ? Math.max(0, Math.ceil((game.campLimit - h.campT) / 60)) : null;
-    const status = !commandable ? 'DOWN'
-      : h.boostT > 0 ? 'OVERDRIVE'
-      : busy ? (h.path.closed ? 'PATROL' : 'ORDERED')
-      : h.dir ? 'DRIFTING'
-      : h.overdue ? 'ORDERS!'
-      : campLeft !== null ? 'CAMP ' + campLeft : 'CAMPED';
-    ctx.fillText(status, x + S * 12, y + h0 * 0.72);
+    /* Words stay on their own card. Every status has a short form that
+       fits at a phone's floor size, so this cuts nothing in practice; it
+       is here so a face with wider capitals than planned for clips at its
+       own edge instead of painting over the next ghost's badge. */
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, yc, slotW, h0);
+    ctx.clip();
+    const tx = x + txOff;
+    ctx.textAlign = 'left';
+    fitText(ctx, h.def.name, null, tx, yc + nameDY, 'title', textW, TOKENS.ink);
+
+    const sy = yc + statusDY;
+    if (st.overdue) {
+      const padX = Math.max(3 * uiDpr, S * 1.2);
+      const set = fitRuns(ctx, st.lines, textW - padX * 2);
+      // roomy where the strip allows, snug where the CSS floor has eaten it
+      const ph = Math.min(rolePx('caption') * 1.35,
+        Math.max(rolePx('caption') * 1.1, (h0 - statusDY) * 2));
+      ctx.save();
+      plate(ctx, tx, sy - ph / 2, set.w + padX * 2, ph, ph / 2);
+      ctx.fillStyle = TOKENS.ink;
+      ctx.fill();
+      ctx.strokeStyle = TOKENS.alert;
+      ctx.lineWidth = Math.max(1.5 * uiDpr, S * 0.4);
+      ctx.stroke();
+      ctx.restore();
+      drawRuns(ctx, set, tx + padX, sy);
+    } else {
+      ctx.fillStyle = st.dot;
+      ctx.beginPath(); ctx.arc(tx + dotR, sy, dotR, 0, Math.PI * 2); ctx.fill();
+      const set = fitRuns(ctx, st.lines, textW - dotR * 2 - dotGap);
+      drawRuns(ctx, set, tx + dotR * 2 + dotGap, sy);
+    }
+    ctx.restore();
+
+    if (portrait) {
+      const look = st.look;
+      helpGhost(ctx, x + slotW - portW / 2 - S * 0.5, cy, S * 3,
+        look === 'boost' ? TOKENS.ink : h.color, look === 'boost' ? null : look);
+    }
+    ctx.restore();
   });
 
-  /* The camp-limit dial: a small chip above the roster. Click to cycle.
+  /* The camp-limit dial: a small capsule above the roster. Click to cycle.
      This is the player's own rule, so it lives in the player's layer. */
   {
     const chipW = S * 34, chipH = S * 6;
     const cxp = x0, cyp = y - chipH - S * 1.2;
-    rosterUI.camp = { x: cxp, y: cyp, w: chipW, h: chipH };
+    if (!leaving) rosterUI.camp = { x: cxp, y: cyp, w: chipW, h: chipH };
+    const m = cardMotion(0, leaving);
+    if (m.a > 0.01) {
+      const cy = cyp + m.dy;
+      const look = ctlLook('camp');
+      ctx.save();
+      ctx.globalAlpha = m.a;
+      pressIn(ctx, look, cxp + chipW / 2, cy + chipH / 2);
+      glassPlate(ctx, cxp, cy, chipW, chipH, chipH / 2, 0);
+      ctlTint(ctx, look, cxp, cy, chipW, chipH, chipH / 2);
+      ctx.save();
+      ctx.strokeStyle = TOKENS.line;
+      ctx.globalAlpha *= look.hover ? 0.8 : 0.45;
+      ctx.lineWidth = uiDpr;
+      plate(ctx, cxp, cy, chipW, chipH, chipH / 2);
+      ctx.stroke();
+      ctx.restore();
+      /* The setting sits flush right; the label gets whatever is left of
+         the widest setting's room, so cycling the dial never changes which
+         label fits. */
+      const valueW = Math.max(...CAMP_CHOICES.map(c => roleWidth(ctx, c.label, 'figure')));
+      const off = game.campLimit === null;
+      ctx.textAlign = 'right';
+      fitText(ctx, CAMP_CHOICES[game.campChoice].label, null, cxp + chipW - chipH / 2,
+        cy + chipH / 2, 'figure', valueW, off ? TOKENS.muted : TOKENS.ink);
+      ctx.textAlign = 'left';
+      fitText(ctx, 'CAMP LIMIT', ['CAMP', ''], cxp + chipH / 2, cy + chipH / 2,
+        'caption', chipW - chipH - S * 1.5 - valueW, TOKENS.muted);
+      ctx.restore();
+    }
+  }
+
+  /* PLAY: the one filled control on the glass, because it is the one that
+     matters. A ring round the triangle closes as the squad fills up with
+     orders -- a reading, not a gate; PLAY with gaps is still PLAY. While a
+     ghost is overdue it turns amber and shows a lock, and stays inert:
+     ghosts don't camp. */
+  const px = x0 + 4 * (slotW + gap);
+  if (!leaving) rosterUI.play = { x: px, y, w: playW, h: h0 };
+  const pm = cardMotion(5, leaving);
+  if (pm.a > 0.01) {
+    const blocked = !!stalledHunter();
+    const squad = game.hunters.filter(h => h.isCommandable());
+    const ready = squad.length ? squad.filter(h => h.path).length / squad.length : 1;
+    const py = y + pm.dy;
+    const cx = px + playW / 2, cy = py + h0 / 2;
+    const look = ctlLook('play');
     ctx.save();
-    plate(ctx, cxp, cyp, chipW, chipH, S * 1.5);
-    ctx.fillStyle = 'rgba(8,12,28,0.85)';
-    ctx.fill();
-    ctx.strokeStyle = '#5878ff';
-    ctx.globalAlpha = 0.6;
-    ctx.lineWidth = Math.max(1, S * 0.3);
-    plate(ctx, cxp, cyp, chipW, chipH, S * 1.5);
-    ctx.stroke();
-    ctx.globalAlpha = 0.9;
-    ctx.font = Math.round(S * 3.4) + 'px ui-monospace, Menlo, Consolas, monospace';
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#8fa0c0';
-    ctx.fillText('CAMP LIMIT', cxp + S * 2, cyp + chipH / 2);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold ' + Math.round(S * 3.8) + 'px ui-monospace, Menlo, Consolas, monospace';
-    ctx.fillText(CAMP_CHOICES[game.campChoice].label, cxp + S * 24, cyp + chipH / 2);
+    ctx.globalAlpha = pm.a * (blocked ? 0.85 : 1);
+    pressIn(ctx, look, cx, cy);
+    glassPlate(ctx, px, py, playW, h0, h0 / 2, 0, blocked ? TOKENS.warn : TOKENS.ok);
+    ctlTint(ctx, look, px, py, playW, h0, h0 / 2);
+    ctx.fillStyle = TOKENS.onColor;
+    ctx.strokeStyle = TOKENS.onColor;
+    if (blocked) {
+      padlockGlyph(ctx, cx, cy, S);
+    } else {
+      const rp = Math.min(playW, h0) / 2 - S * 1.8;
+      const w = Math.max(1.5 * uiDpr, S * 0.5);
+      ctx.save();
+      ctx.globalAlpha *= 0.22;
+      ctx.lineWidth = w;
+      ctx.beginPath(); ctx.arc(cx, cy, rp, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+      if (ready > 0) {
+        ctx.save();
+        ctx.lineWidth = w;
+        ctx.lineCap = ready < 1 ? 'round' : 'butt';
+        ctx.beginPath();
+        ctx.arc(cx, cy, rp, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, ready));
+        ctx.stroke();
+        ctx.restore();
+      }
+      playGlyph(ctx, cx, cy, rp * 0.55);
+    }
     ctx.restore();
   }
 
-  /* PLAY: green and pulsing when the squad is ready; amber and inert while
-     any ghost is stalled, because ghosts don't camp. */
-  const px = x0 + 4 * (slotW + gap);
-  rosterUI.play = { x: px, y, w: playW, h: h0 };
-  const blocked = !!stalledHunter();
-  const btnColor = blocked ? '#c87820' : '#40ff88';
-  const pulse = blocked ? 0.45 : 0.75 + 0.25 * Math.sin(uiFrame * 0.12);
-  ctx.save();
-  plate(ctx, px, y, playW, h0, S * 2.5);
-  ctx.fillStyle = blocked ? 'rgba(24,14,4,0.88)' : 'rgba(8,20,12,0.88)';
-  ctx.fill();
-  ctx.shadowColor = btnColor;
-  ctx.shadowBlur = blocked ? 0 : S * 4 * pulse;
-  ctx.strokeStyle = btnColor;
-  ctx.globalAlpha = pulse;
-  ctx.lineWidth = Math.max(1, S * 0.6);
-  plate(ctx, px, y, playW, h0, S * 2.5);
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-  ctx.globalAlpha = blocked ? 0.55 : 1;
-  ctx.fillStyle = btnColor;
-  const cx2 = px + playW / 2, cy2 = y + h0 / 2;
-  ctx.beginPath();
-  ctx.moveTo(cx2 - S * 2.2, cy2 - S * 3);
-  ctx.lineTo(cx2 + S * 3.4, cy2);
-  ctx.lineTo(cx2 - S * 2.2, cy2 + S * 3);
-  ctx.closePath();
-  ctx.fill();
   ctx.restore();
+}
 
+/* The status pill: one calm line in the empty HUD row under the scores,
+   in place of the pixel COMMAND that used to blink in the fruit lane. The
+   words come from a short ladder, first match wins -- a ghost overdue,
+   then the route in your hand, then a squad with nothing left to order,
+   then the plain count -- and the second figure is what a catch would
+   bank this instant. It reports state and consequence; it never proposes
+   a move. Display only: not a target, so the ? chip keeps all its pad. */
+/* The route in hand, timed the way the ghost will walk it. The first tile
+   of a fresh trail is the one the ghost is standing in unless it is
+   already past it, and a ghost is never charged for walking to its own
+   tile. `upTo` stops the walk after that many tiles. */
+function handFrom(a) {
+  const here = a.hunter.tile();
+  return a.tiles[0].c === here.c && a.tiles[0].r === here.r ? 1 : 0;
+}
+function handTicks(a, upTo) {
+  const tiles = upTo === undefined ? a.tiles : a.tiles.slice(0, upTo);
+  return orderTicks(a.hunter, tiles, handFrom(a), false);
+}
+
+function pillState() {
+  const T = TOKENS;
+  const squad = game.hunters.filter(h => h.isCommandable());
+  const ordered = squad.filter(h => h.path).length;
+  const stalled = stalledHunter();
+  if (stalled) {
+    const n = stalled.def.name;
+    return { kind: 'overdue', dot: T.alert, rim: T.warn, text: n + ' NEEDS ORDERS',
+      main: [[cap(n + ' NEEDS ORDERS', T.ink)], [cap(n + ' OVERDUE', T.ink)], [cap(n, T.ink)]] };
+  }
+  const a = Draw.active;
+  if (a && a.tiles.length >= 2) {
+    const h = a.hunter;
+    if (a.closable) {
+      return { kind: 'loop', dot: h.color, text: 'RELEASE TO LOOP',
+        main: [[cap('RELEASE TO LOOP', T.ink)], [cap('LOOP', T.ink)]] };
+    }
+    /* A ghost still in the den walks the door first, which no route time
+       can promise honestly, so it gets the instruction and no number. */
+    if (h.state !== 'active') {
+      return { kind: 'drawing', dot: h.color, text: 'RELEASE TO COMMIT',
+        main: [[cap('RELEASE TO COMMIT', T.ink)], [cap('RELEASE', T.ink)]] };
+    }
+    const s = secs(handTicks(a));
+    return { kind: 'drawing', dot: h.color, text: s + ' · RELEASE TO COMMIT',
+      main: [[num(s), cap(' · RELEASE TO COMMIT', T.ink)], [num(s), cap(' · RELEASE', T.ink)], [num(s)]] };
+  }
+  if (squad.length && ordered === squad.length) {
+    return { kind: 'ready', dot: T.ok, text: 'ALL ORDERED · PLAY',
+      main: [[cap('ALL ORDERED · PLAY', T.ink)], [cap('ALL ORDERED', T.ink)], [cap('READY', T.ink)]] };
+  }
+  const of = ordered + ' OF ' + squad.length;
+  return { kind: 'command', dot: T.line, text: 'COMMAND · ' + of + ' ORDERED',
+    // only the figures are set as figures; OF is a word, like ORDERED
+    main: [[cap('COMMAND · ', T.ink), num(String(ordered)), cap(' OF '),
+            num(String(squad.length)), cap(' ORDERED')],
+           [num(ordered + '/' + squad.length), cap(' ORDERED')],
+           [num(ordered + '/' + squad.length)]] };
+}
+
+// the pill's width, sprung between one state's text and the next
+const pillAnim = { from: 0, to: 0, at: -1e9 };
+// a tight, dropless shadow: the row under the pill is the maze's top wall
+const PILL_SHADE = { blur: 1, dy: 0 };
+function pillWidthNow() {
+  return pillAnim.from + (pillAnim.to - pillAnim.from) * springIn(uiClock - pillAnim.at);
+}
+
+function drawStatusPill(ctx, ox, oy, leaving) {
+  const S = scale;
+  const k = leaving ? 1 - easeOut(fxThawT()) : fxIn();
+  const a = Math.min(1, Math.max(0, k));
+  if (a <= 0.01) return;
+  const st = pillState();
+  const box = pillBox();
+  const ph = box.h;
+  // it drops in from the score line above, and leaves the way it came
+  const top = box.top + oy - (1 - k) * S * 3;
+  const cx = NATIVE_W / 2 * S + ox;
+  const padX = ph * 0.45;
+  const dotR = Math.max(1.5 * uiDpr, S * 0.8);
+  const gapA = Math.max(3 * uiDpr, S * 1.4);
+  // never wider than the room left of the ? chip, mirrored about the centre
+  const maxW = (HELP_CHIP.x - HELP_CHIP.r - 1 - NATIVE_W / 2) * 2 * S;
+
+  // the squad at a glance: filled when a ghost has orders, hollow when not
+  const pip = Math.max(1.25 * uiDpr, S * 0.75);
+  const pipGap = Math.max(1.5 * uiDpr, S * 0.7);
+  const pips = { w: game.hunters.length * pip * 2 + (game.hunters.length - 1) * pipGap,
+    paint(c, x, y) {
+      game.hunters.forEach((h, i) => {
+        const px = x + pip + i * (pip * 2 + pipGap);
+        c.save();
+        c.beginPath(); c.arc(px, y, pip, 0, Math.PI * 2);
+        if (h.isCommandable() && h.path) { c.fillStyle = h.color; c.fill(); }
+        else {
+          if (!h.isCommandable()) c.globalAlpha *= 0.35;
+          c.strokeStyle = h.color;
+          c.lineWidth = Math.max(uiDpr, S * 0.3);
+          c.beginPath(); c.arc(px, y, pip - c.lineWidth / 2, 0, Math.PI * 2);
+          c.stroke();
+        }
+        c.restore();
+      });
+    } };
+  const space = { w: gapA * 1.5 };
+  const b = String(bountyNow());
+  const bFull = [num('+' + b), cap(' ON CATCH')], bShort = [num('+' + b)];
+  const m = st.main, last = m[m.length - 1];
+  // the same words, set in the pill's own sizes (see buildTypeScale)
+  const inRow = { caption: 'pillCap', figure: 'pillFig' };
+  const variants = [
+    m[0].concat([space, pips, space], bFull),
+    m[0].concat([space, pips, space], bShort),
+    m[1].concat([space, pips, space], bShort),
+    last.concat([space, pips, space], bShort),
+    last.concat([space, pips]),
+    last,
+  ].map(v => v.map(r => (inRow[r.role] ? Object.assign({}, r, { role: inRow[r.role] }) : r)));
+  const fixed = padX * 2 + dotR * 2 + gapA;
+  const set = fitRuns(ctx, variants, maxW - fixed);
+  const target = Math.min(maxW, set.w + fixed);
+  if (leaving || pillAnim.at < fx.enterAt) {
+    pillAnim.from = pillAnim.to = target;
+    pillAnim.at = uiClock;
+  } else if (Math.abs(target - pillAnim.to) > 0.5) {
+    pillAnim.from = pillWidthNow();
+    pillAnim.to = target;
+    pillAnim.at = uiClock;
+  }
+  const w = Math.min(maxW, pillWidthNow());
+
+  // a refused PLAY: the pill shakes its head, briefly, and only then
+  let dx = 0;
+  const since = uiClock - fx.refusedAt;
+  if (st.kind === 'overdue' && since < 14 && !reducedMotion()) {
+    dx = Math.sin(since * 1.9) * (1 - since / 14) * S * 1.6;
+  }
+
+  const x = cx - w / 2 + dx;
+  ctx.save();
+  ctx.globalAlpha = a;
+  /* Nothing of it lands on the maze: not the capsule at the top of its
+     spring, and not its shadow, which is cut short and kept straight under
+     it -- a board pixel darkened by the glass is a board pixel lost. */
+  ctx.beginPath();
+  ctx.rect(0, 0, screenCanvas.width, box.floor + oy);
+  ctx.clip();
+  glassPlate(ctx, x, top, w, ph, ph / 2, 0, null, PILL_SHADE);
+  const rest = { x: cx - w / 2, y: box.top + oy, w, h: ph, floor: box.floor + oy };
+  ctx.save();
+  ctx.strokeStyle = st.rim || TOKENS.line;
+  ctx.globalAlpha *= st.rim ? 0.95 : 0.4;
+  ctx.lineWidth = st.rim ? Math.max(1.5 * uiDpr, S * 0.4) : uiDpr;
+  plate(ctx, x, top, w, ph, ph / 2);
+  ctx.stroke();
   ctx.restore();
+  // the content sits at its own width, centred; the capsule springs round it
+  plate(ctx, x, top, w, ph, ph / 2);
+  ctx.clip();
+  const cy = top + ph / 2;
+  const lx = cx + dx - (set.w + fixed) / 2 + padX;
+  ctx.fillStyle = st.dot;
+  ctx.beginPath(); ctx.arc(lx + dotR, cy, dotR, 0, Math.PI * 2); ctx.fill();
+  ctx.textBaseline = 'middle';
+  drawRuns(ctx, set, lx + dotR * 2 + gapA, cy);
+  ctx.restore();
+  return rest;
+}
+
+/* ---- planning feedback ----
+   While you drag, your finger or cursor is sitting on the one thing you
+   are trying to read. So the numbers float clear of it on a small tag:
+   the route's time, a patrol's lap when the loop is armed, and the moment
+   the route meets another ghost's in time and space, who with and when.
+   It is pinned to the head tile, not the pointer, and eases after it, so
+   it steps with the trail instead of shivering with the hand. It reports
+   consequences only -- nothing on it is the evader's, and nothing on it
+   suggests where to go. */
+
+/* The pincer the route in hand is making, if any: the first bead of it
+   that coincides with another ghost's (the same test computeHotBeads
+   lights the white beads by), the ghost it meets, and when this ghost
+   gets there at the speeds it will really walk. */
+function pincerFor(a) {
+  const i = game.hunters.indexOf(a.hunter);
+  const hot = hotBeadsNow();
+  const mine = hot[i];
+  if (!mine || !mine.hot.size) return null;
+  let best = null;
+  for (const k of [...mine.hot].sort((m, n) => m - n)) {
+    const p = mine.pts[k - 1];
+    hot.forEach((other, j) => {
+      if (j === i || !other || !other.hot.has(k) || !other.pts[k - 1]) return;
+      const q = other.pts[k - 1];
+      const d2 = (p.x - q.x) * (p.x - q.x) + (p.y - q.y) * (p.y - q.y);
+      if (d2 < 20 * 20 && (!best || d2 < best.d2)) best = { k, p, j, d2 };
+    });
+    if (best) break;
+  }
+  if (!best) return null;
+  // the bead sits part way along the step into tiles[p.i]
+  const p = best.p, t0 = a.tiles[p.i - 1];
+  const f = Math.min(1, (Math.abs(p.x - tcx(t0.c)) + Math.abs(p.y - tcy(t0.r))) / TILE);
+  const ta = handTicks(a, p.i), tb = handTicks(a, p.i + 1);
+  return { with: game.hunters[best.j], bead: best.k, ticks: ta + (tb - ta) * f };
+}
+
+/* What the tag says, or null when there is no tag: only once a press has
+   declared itself a drag, only with a route to time, and never for a
+   ghost still in the den, whose walk to the door no figure can promise. */
+function dragTag() {
+  const a = Draw.active;
+  if (!a || !input.dragMoved || game.phase !== 'command' || a.tiles.length < 2) return null;
+  const h = a.hunter;
+  if (h.state !== 'active') return null;
+  const head = a.tiles[a.tiles.length - 1];
+  const loop = a.closable;
+  const ticks = loop ? orderTicks(h, a.tiles.slice(0, -1), 0, true) : handTicks(a);
+  return { h, head, loop, ticks, pincer: pincerFor(a) };
+}
+
+const TAG_EASE = 2.5;    // ticks: how far the tag lags the head tile
+const TAG_LIFT = 44;     // CSS px between a fingertip and the tag
+const tagAnim = { on: false, x: 0, y: 0, t: 0 };
+/* Ease toward a target over uiClock time -- or snap, on first sight and
+   always under reduced motion. */
+function tagFollow(tx, ty) {
+  if (!tagAnim.on || reducedMotion()) {
+    tagAnim.x = tx; tagAnim.y = ty;
+  } else {
+    const k = 1 - Math.exp(-Math.max(0, uiClock - tagAnim.t) / TAG_EASE);
+    tagAnim.x += (tx - tagAnim.x) * k;
+    tagAnim.y += (ty - tagAnim.y) * k;
+  }
+  tagAnim.on = true;
+  tagAnim.t = uiClock;
+}
+
+function drawDragTag(ctx, ox, oy) {
+  const st = dragTag();
+  if (!st) { tagAnim.on = false; return null; }
+  const S = scale, W = screenCanvas.width, H = screenCanvas.height;
+  const hx = tcx(st.head.c) * S + ox, hy = (tcy(st.head.r) + HUD_TOP * TILE) * S + oy;
+  const padX = Math.max(5 * uiDpr, S * 2), padY = Math.max(3 * uiDpr, S * 1.2);
+  const lineH = rolePx('caption') * 1.3;
+  const maxW = Math.min(W - S * 4, S * 90) - padX * 2;
+  const s = secs(st.ticks);
+  const lines = [fitRuns(ctx, st.loop ? [[cap('LOOP '), num(s)], [num(s)]] : [[num(s)]], maxW)];
+  if (st.pincer) {
+    const who = st.pincer.with, ps = secs(st.pincer.ticks);
+    const name = { t: who.def.name, role: 'caption', color: who.color };
+    lines.push(fitRuns(ctx, [
+      [cap('PINCER w/ ', TOKENS.ink), name, cap(' '), num(ps)],
+      [cap('PINCER '), num(ps)],
+      [name, cap(' '), num(ps)],
+      [num(ps)]], maxW));
+  }
+  const w = Math.max(...lines.map(l => l.w)) + padX * 2;
+  const h = lines.length * lineH + padY * 2;
+
+  /* A fingertip covers the head, so the tag stands well above it; a cursor
+     covers almost nothing, so it sits just off the head's shoulder. Near
+     the top of the glass it goes underneath instead, and it never leaves
+     the canvas. */
+  const lift = touchMode ? TAG_LIFT * uiDpr : S * 6;
+  let tx = touchMode ? hx - w / 2 : hx + S * 6;
+  let ty = hy - lift - h;
+  if (ty < HUD_TOP * TILE * S) ty = hy + lift;
+  tx = Math.max(S, Math.min(W - w - S, tx));
+  ty = Math.max(S, Math.min(H - h - S, ty));
+  tagFollow(tx, ty);
+  const x = tagAnim.x, y = tagAnim.y;
+  const r = Math.min(h / 2, S * 3);
+
+  ctx.save();
+  if (touchMode) {
+    // a hairline back to the head it is talking about
+    ctx.save();
+    ctx.strokeStyle = st.h.color;
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = uiDpr;
+    ctx.beginPath();
+    ctx.moveTo(hx, hy);
+    ctx.lineTo(Math.max(x + r, Math.min(x + w - r, hx)), y > hy ? y : y + h);
+    ctx.stroke();
+    ctx.restore();
+  }
+  glassPlate(ctx, x, y, w, h, r, 1);
+  ctx.save();
+  ctx.strokeStyle = st.h.color;
+  ctx.globalAlpha = 0.7;
+  ctx.lineWidth = uiDpr;
+  plate(ctx, x, y, w, h, r);
+  ctx.stroke();
+  ctx.restore();
+  ctx.textBaseline = 'middle';
+  lines.forEach((l, n) => drawRuns(ctx, l, x + padX, y + padY + lineH * (n + 0.5)));
+  ctx.restore();
+  return { x, y, w, h, tx, ty, hx, hy };
+}
+
+/* A finger on open floor means "go" -- but only if it lifts as a tap, and
+   that rule used to live in the manual. Now it is drawn: a ring at exactly
+   the slop radius round the point the finger landed on, the play mark in
+   the middle. Lift inside it and time starts; slide out and it lets go,
+   and time stays stopped. It is a picture of pendingResume and the same
+   threshold, never a second opinion: pressUp resumes that press on
+   !dragMoved alone, which is exactly what crossing this circle flips (the
+   quick-tap ruling only ever reviews a drawn route, never this). With a
+   ghost overdue the lift will be refused, so the ring says that instead. */
+function releaseRing(ox, oy) {
+  const rel = fx.release;
+  if (!rel || game.phase !== 'command') return null;
+  let a = 1;
+  if (rel.brokeAt !== null) {
+    a = 1 - easeOut(uiClock - rel.brokeAt);
+    if (a <= 0) return null;
+  } else if (!input.pendingResume) return null;
+  const S = scale;
+  return { x: rel.x * S + ox, y: (rel.y + HUD_TOP * TILE) * S + oy, r: TAP_SLOP_TOUCH * S,
+    a, broken: rel.brokeAt !== null, blocked: !!stalledHunter() };
+}
+function drawReleaseRing(ctx, ox, oy) {
+  const ring = releaseRing(ox, oy);
+  if (!ring) return;
+  const S = scale;
+  const color = ring.blocked ? TOKENS.warn : TOKENS.ok;
+  ctx.save();
+  ctx.globalAlpha = ring.a;
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  if (!ring.broken) {
+    // the tether: how far the finger has wandered from where it landed
+    const fx0 = input.mx * S + ox, fy0 = (input.my + HUD_TOP * TILE) * S + oy;
+    if (Math.hypot(fx0 - ring.x, fy0 - ring.y) > S) {
+      ctx.save();
+      ctx.globalAlpha *= 0.45;
+      ctx.lineWidth = uiDpr;
+      ctx.beginPath(); ctx.moveTo(ring.x, ring.y); ctx.lineTo(fx0, fy0); ctx.stroke();
+      ctx.restore();
+    }
+  }
+  ctx.globalAlpha *= 0.8;
+  ctx.lineWidth = Math.max(1.5 * uiDpr, S * 0.35);
+  ctx.beginPath(); ctx.arc(ring.x, ring.y, ring.r, 0, Math.PI * 2); ctx.stroke();
+  if (ring.blocked) padlockGlyph(ctx, ring.x, ring.y, Math.max(1.2 * uiDpr, S * 0.55));
+  else playGlyph(ctx, ring.x, ring.y, Math.max(3 * uiDpr, S * 1.3));
+  ctx.restore();
+}
+
+/* The last things on the glass under the ? layer: readouts that sit over
+   the pellets and the lifted cast, because a pellet punched through a
+   number would make it unreadable. Both exist only while something is
+   pressed in command, and both are small. */
+function drawGlassOver(ctx, ox, oy) {
+  drawReleaseRing(ctx, ox, oy);
+  drawDragTag(ctx, ox, oy);
+}
+
+/* The pincer read, heard. Only on a change, only for the route in hand, at
+   most once per PINCER_GAP, and through uiBlip, so mute silences it. A
+   route picked up already meeting someone starts from there unannounced,
+   and letting go is not "lost". Presentation only: the simulation never
+   learns a chime happened.
+   The ear keeps what it last *said*, not what it last saw. A change inside
+   the gap is held, not dropped: if it is still true when the gap runs out
+   it is said then, so the last thing heard always matches the route in
+   hand -- and a wobble that flips back inside the gap was never news. */
+const PINCER_GAP = 15;   // ticks: a quarter second
+const pincerEar = { a: null, said: false, at: -1e9 };
+function listenForPincer() {
+  const a = game.phase === 'command' ? Draw.active : null;
+  if (!a) { pincerEar.a = null; return; }
+  const mine = hotBeadsNow()[game.hunters.indexOf(a.hunter)];
+  const on = !!(mine && mine.hot.size);
+  if (pincerEar.a !== a) { pincerEar.a = a; pincerEar.said = on; return; }
+  if (on === pincerEar.said || uiClock - pincerEar.at < PINCER_GAP) return;
+  pincerEar.said = on;
+  pincerEar.at = uiClock;
+  if (on) Sound.uiPincerOn(); else Sound.uiPincerOff();
 }
 
 /* ------------------------------ the manual ------------------------------
@@ -3902,36 +5492,28 @@ function drawRoster(ctx, ox, oy) {
    behind it: seven rules, each with a little drawn figure. Documentation
    is for the player, so it renders in the player's layer. */
 const helpUI = { btn: null, close: null, panel: null };
-const HELP_FONT = 'px ui-monospace, Menlo, Consolas, monospace';
+// the ? chip's centre, in native px of the whole canvas (HUD rows included)
+const HELP_CHIP = { x: NATIVE_W - 7, y: 7, r: 4.2 };
 
-/* Manual text gets a floor in real pixels -- at small window scales the
-   S-proportional sizes drop below legibility -- and shrinks back only as
-   far as needed to stay inside its column. */
-function helpText(ctx, text, x, y, px, maxW, weight, color) {
-  ctx.fillStyle = color;
-  let size = px;
-  ctx.font = weight + Math.round(size) + HELP_FONT;
-  while (size > 7 && maxW && ctx.measureText(text).width > maxW) {
-    size -= 0.5;
-    ctx.font = weight + Math.round(size) + HELP_FONT;
-  }
-  ctx.fillText(text, x, y);
-}
-
-function helpGhost(ctx, x, y, r, color, fright) {
-  // the roster ghost in miniature: dome, straight sides, three-flame hem
+/* The roster ghost in miniature: dome, straight sides, three-flame hem.
+   `look` is true or 'fright' for the frightened face, 'eyes' for a ghost
+   walking home as nothing but its eyes; anything else is the ghost. */
+function helpGhost(ctx, x, y, r, color, look) {
+  const fright = look === true || look === 'fright';
   ctx.save();
   ctx.translate(x, y);
   ctx.scale(r / 7, r / 7);
-  ctx.beginPath();
-  ctx.moveTo(-7, 0);
-  ctx.arc(0, 0, 7, Math.PI, Math.PI * 2);
-  ctx.lineTo(7, 7);
-  for (let k = 1; k <= 5; k++) ctx.lineTo(7 - k * (14 / 6), k % 2 ? 4.9 : 7);
-  ctx.lineTo(-7, 7);
-  ctx.closePath();
-  ctx.fillStyle = fright ? PAL.fright : color;
-  ctx.fill();
+  if (look !== 'eyes') {
+    ctx.beginPath();
+    ctx.moveTo(-7, 0);
+    ctx.arc(0, 0, 7, Math.PI, Math.PI * 2);
+    ctx.lineTo(7, 7);
+    for (let k = 1; k <= 5; k++) ctx.lineTo(7 - k * (14 / 6), k % 2 ? 4.9 : 7);
+    ctx.lineTo(-7, 7);
+    ctx.closePath();
+    ctx.fillStyle = fright ? PAL.fright : color;
+    ctx.fill();
+  }
   if (fright) {
     ctx.fillStyle = PAL.peach;
     ctx.beginPath(); ctx.arc(-3, -1, 1.1, 0, Math.PI * 2); ctx.fill();
@@ -4076,12 +5658,12 @@ function helpFigure(ctx, kind, cx, cy, S) {
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
       helpGhost(ctx, cx + S * 3, cy + S * 1, S * 3.4, HUNTER_DEFS[1].color, false);
-      ctx.fillStyle = '#8fa0c0';
-      ctx.font = 'bold ' + Math.round(S * 3.4) + HELP_FONT;
+      // the small z trails the big one by the big one's own size, floor or not
+      const zPx = rolePx('caption');
       ctx.textAlign = 'left';
-      ctx.fillText('Z', cx + S * 0.5, cy - S * 5);
-      ctx.font = 'bold ' + Math.round(S * 2.6) + HELP_FONT;
-      ctx.fillText('z', cx + S * 3.5, cy - S * 7);
+      fitText(ctx, 'Z', null, cx + S * 0.5, cy - S * 5, 'caption', 0, TOKENS.muted);
+      fitText(ctx, 'z', null, cx + S * 0.5 + zPx * 0.75, cy - S * 5 - zPx * 0.55,
+        'micro', 0, TOKENS.muted);
       break;
     }
     case 'fright': {
@@ -4098,11 +5680,9 @@ function helpFigure(ctx, kind, cx, cy, S) {
       for (const k of [-1, 0, 1]) {
         ctx.beginPath(); ctx.arc(cx - S * 7 + k * S * 3.6, cy, S * 0.9, 0, Math.PI * 2); ctx.fill();
       }
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold ' + Math.round(S * 4.4) + HELP_FONT;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText('x LVL', cx - S * 1, cy + S * 0.2);
+      fitText(ctx, 'x LVL', null, cx - S * 2.2, cy + S * 0.2, 'caption', S * 17, TOKENS.ink);
       break;
     }
   }
@@ -4122,6 +5702,25 @@ const HELP_ROWS = [
   { fig: 'fright', a: 'ENERGIZERS TURN YOUR SQUAD BLUE',   b: 'BLUE GHOSTS CAN BE EATEN' },
   { fig: 'score',  a: 'SCORE = DOTS LEFT x LEVEL',         b: 'CATCH HIM FAST, BANK MORE' },
 ];
+/* What a line says when the column is too narrow to hold it at a legible
+   size -- a small phone at dpr 3. Keyed by the line it stands in for, so
+   the click and finger idioms each get their own. */
+const HELP_SHORT = {
+  'BEADS MARK EQUAL TRAVEL TIME':         'BEADS = EQUAL TRAVEL TIME',
+  'WHITE BEADS = A SYNCED PINCER':        'WHITE BEADS = PINCER',
+  'IT WALKS EXACTLY WHAT YOU DREW':       'IT WALKS WHAT YOU DREW',
+  'CLOSE THE LOOP FOR AN ENDLESS PATROL': 'CLOSE THE LOOP TO PATROL',
+  'CLICK AN ARROWHEAD TO KEEP DRAWING':   'CLICK A TIP TO KEEP DRAWING',
+  'TAP AN ARROWHEAD TO KEEP DRAWING':     'TAP A TIP TO KEEP DRAWING',
+  'OFF THE END IT COASTS TO A WALL':      'THEN IT COASTS TO A WALL',
+  'CAMP LIMIT SETS HOW LONG IT WAITS':    'CAMP LIMIT: HOW LONG IT WAITS',
+  'ENERGIZERS TURN YOUR SQUAD BLUE':      'ENERGIZERS TURN YOU BLUE',
+  'SPACE FREEZE   1-4 SELECT   RIGHT-DRAG ERASE   M MUTE': 'SPACE FREEZE  1-4 SELECT  M MUTE',
+  'TAP FREEZE   ROSTER SELECTS   DRAG BACK TO UNDO':      'ROSTER SELECTS  DRAG BACK TO UNDO',
+};
+function helpLine(ctx, text, x, y, role, maxW, color) {
+  fitText(ctx, text, HELP_SHORT[text] || null, x, y, role, maxW, color);
+}
 
 function drawHelpLayer(ctx) {
   const S = scale;
@@ -4132,32 +5731,36 @@ function drawHelpLayer(ctx) {
   /* The ? chip: the one control that never leaves the glass. It breathes
      on the attract screen and during the first untouched seconds of a
      round, then settles down and stays out of the way. */
-  const r = S * 4.2;
-  const bcx = W - S * 7, bcy = S * 7;
+  const r = S * HELP_CHIP.r;
+  const bcx = HELP_CHIP.x * S, bcy = HELP_CHIP.y * S;
   helpUI.btn = { x: bcx - r - S, y: bcy - r - S, w: (r + S) * 2, h: (r + S) * 2 };
   const attention = !game.helpOpen
     && (game.phase === 'attract' || (game.hint && game.phase === 'play' && game.tick < 1200));
   const pulse = attention ? 0.65 + 0.35 * Math.sin(uiFrame * 0.1) : 0.5;
+  const chip = ctlLook('help');
+  ctx.save();
+  pressIn(ctx, chip, bcx, bcy);
   ctx.beginPath(); ctx.arc(bcx, bcy, r, 0, Math.PI * 2);
   ctx.fillStyle = 'rgba(8,12,28,0.85)';
   ctx.fill();
+  ctlTint(ctx, chip, bcx - r, bcy - r, r * 2, r * 2, r);
   ctx.save();
   ctx.shadowColor = '#5878ff';
   ctx.shadowBlur = attention ? S * 3.5 * pulse : 0;
   ctx.strokeStyle = '#5878ff';
-  ctx.globalAlpha = 0.4 + pulse * 0.6;
+  ctx.globalAlpha = chip.hover || chip.pressed ? 1 : 0.4 + pulse * 0.6;
   ctx.lineWidth = Math.max(1, S * 0.5);
   ctx.beginPath(); ctx.arc(bcx, bcy, r, 0, Math.PI * 2); ctx.stroke();
   ctx.restore();
-  ctx.fillStyle = game.helpOpen ? '#ffffff' : '#9fb4ff';
-  ctx.font = 'bold ' + Math.round(S * 5.4) + HELP_FONT;
   ctx.textAlign = 'center';
-  ctx.fillText('?', bcx, bcy + S * 0.4);
+  fitText(ctx, '?', null, bcx, bcy + S * 0.4, 'title', r * 1.6,
+    game.helpOpen || chip.hover ? TOKENS.ink : '#9fb4ff');
+  ctx.restore();
 
   if (!game.helpOpen) { ctx.restore(); return; }
 
   // dim the whole machine: the manual is read, not played
-  ctx.fillStyle = 'rgba(0,0,8,0.78)';
+  ctx.fillStyle = TOKENS.scrim;
   ctx.fillRect(0, 0, W, H);
 
   const px = S * 9, py = S * 12;
@@ -4174,13 +5777,16 @@ function drawHelpLayer(ctx) {
   ctx.globalAlpha = 1;
 
   ctx.textAlign = 'left';
-  helpText(ctx, 'HOW TO PLAY', px + S * 6, py + S * 7,
-    Math.max(S * 6, 18), pw - S * 20, 'bold ', '#ffffff');
+  fitText(ctx, 'HOW TO PLAY', null, px + S * 6, py + S * 7, 'head', pw - S * 20, TOKENS.ink);
 
   const cw = S * 7;
   helpUI.close = { x: px + pw - cw - S * 3, y: py + S * 3.5, w: cw, h: cw };
   const cc = helpUI.close;
-  ctx.strokeStyle = '#9fb4ff';
+  const x = ctlLook('close');
+  ctx.save();
+  pressIn(ctx, x, cc.x + cw / 2, cc.y + cw / 2);
+  ctlTint(ctx, x, cc.x, cc.y, cw, cw, cw / 2);
+  ctx.strokeStyle = x.hover ? TOKENS.ink : '#9fb4ff';
   ctx.lineWidth = Math.max(1, S * 0.6);
   ctx.lineCap = 'round';
   ctx.beginPath();
@@ -4189,9 +5795,13 @@ function drawHelpLayer(ctx) {
   ctx.moveTo(cc.x + cw - S * 1.8, cc.y + S * 1.8);
   ctx.lineTo(cc.x + S * 1.8, cc.y + cw - S * 1.8);
   ctx.stroke();
+  ctx.restore();
 
   const top = py + S * 13;
   const rowH = (ph - S * 13 - S * 10) / HELP_ROWS.length;
+  /* The rule's two lines sit apart by their own sizes, not by S: at a CSS
+     floor the type outgrows the spacing the S layout was drawn for. */
+  const lineGap = Math.max(S * 5.4, (rolePx('lead') + rolePx('caption')) * 0.6);
   HELP_ROWS.forEach((row, i) => {
     const cy = top + rowH * i + rowH / 2;
     if (i > 0) {
@@ -4208,17 +5818,17 @@ function drawHelpLayer(ctx) {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     const textW = pw - S * 42;
-    helpText(ctx, (touchMode && row.at) || row.a, px + S * 37, cy - S * 2.6,
-      Math.max(S * 3.8, 12), textW, 'bold ', '#ffffff');
-    helpText(ctx, (touchMode && row.bt) || row.b, px + S * 37, cy + S * 2.8,
-      Math.max(S * 3.5, 11), textW, '', '#8fa0c0');
+    helpLine(ctx, (touchMode && row.at) || row.a, px + S * 37, cy - lineGap * 0.48,
+      'lead', textW, TOKENS.ink);
+    helpLine(ctx, (touchMode && row.bt) || row.b, px + S * 37, cy + lineGap * 0.52,
+      'caption', textW, TOKENS.muted);
   });
 
   ctx.textAlign = 'center';
-  helpText(ctx, touchMode
+  helpLine(ctx, touchMode
       ? 'TAP FREEZE   ROSTER SELECTS   DRAG BACK TO UNDO'
       : 'SPACE FREEZE   1-4 SELECT   RIGHT-DRAG ERASE   M MUTE',
-    px + pw / 2, py + ph - S * 5, Math.max(S * 3.2, 10), pw - S * 8, '', '#8fa0c0');
+    px + pw / 2, py + ph - S * 5, 'micro', pw - S * 8, TOKENS.muted);
 
   ctx.restore();
 }

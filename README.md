@@ -215,17 +215,28 @@ counting down our board.
 ## Tests
 
 No framework, no install. `test/harness.js` boots `game.js` in Node behind a
-stub DOM, so the whole game can be exercised headlessly in about a second.
+stub DOM, so the whole game can be exercised headlessly in about thirty
+seconds.
 
 ```bash
 node test/test-game.js && node test/validate-maze.js && node test/no-infinite-lanes.js && node test/palette-lock.js
 ```
 
-- **test-game.js** — 59 checks: path retraction, loop closure, self-crossing,
-  the refusal to reroute, orders queued from the den, the wall-stop rule, the
-  energizer role reversal, eyes and respawn, capture and pincer scoring, his
-  three lives and the dots that stay eaten across them, board loss, level
-  flow, and a 30,000-tick soak.
+- **test-game.js** — 277 checks. The game: path retraction, loop closure,
+  self-crossing, the refusal to reroute, orders queued from the den, the
+  wall-stop rule, the energizer role reversal, eyes and respawn, capture and
+  pincer scoring, his three lives and the dots that stay eaten across them,
+  board loss, level flow, touch input through real events, and a 30,000-tick
+  soak. The glass: that freeze and resume flip on the click tick while every
+  effect only follows; that each way of stopping time starts the freeze from
+  the right place; that hit rects never move with the cards; that every
+  figure on a card, the pill or the drag tag is what the simulation then
+  does, tick for tick (routes, loops, tunnels, overdrive, a ghost turned
+  round mid-tile, a drift through the wrap zone, the bounty); that the pill
+  stays in its HUD row and every word stays on its own card at real phone
+  sizes and densities; fitText's shrink, short labels and floor; that the
+  glass asks for no live blur; that a resize mid-freeze starts it afresh;
+  and that prefers-reduced-motion snaps everything.
 - **validate-maze.js** — proves the board is mirror-symmetric, fully
   connected, and free of dead ends and 2×2 rooms.
 - **no-infinite-lanes.js** — walks all 1,328 straight runs on the board and
@@ -233,8 +244,9 @@ node test/test-game.js && node test/validate-maze.js && node test/no-infinite-la
   silently cancelled by a corridor that wraps the full width, which is exactly
   what the first version of the maze did.
 - **palette-lock.js** — fails on any color off the ladder, any enabled image
-  smoothing, or any sprite blitted at a scale other than 1:1. Resampling
-  invents colors that were never in the palette.
+  smoothing, any sprite blitted at a scale other than 1:1, or any alpha,
+  blur, shadow or gradient outside the CRT pass and the command layer.
+  Resampling and blending invent colors that were never in the palette.
 - **speed-audit.js** / **difficulty-curve.js** — measure what the tuning
   tables actually produce: tiles covered per second by each side, and — since
   a board is now three catches with three chances, making win rate a soft

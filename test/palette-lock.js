@@ -1,7 +1,8 @@
 // Enforces two things a 1981 board enforced for free:
 //   1. every color in the source palette sits on the resistor ladder
 //   2. nothing in the code draws with a color that isn't in the palette
-// A smoothed blit or a stray rgba() shows up here as an off-palette value.
+// A smoothed blit or a stray rgba() shows up here as an off-palette value,
+// and so does an alpha, blur, shadow or gradient that would mix one.
 const fs = require('fs');
 const path = require('path');
 
@@ -44,6 +45,26 @@ if (stray.length) {
   fail++;
 } else {
   console.log('  PASS no off-palette color literals in the drawing code');
+}
+
+/* A color literal is not the only way to put an off-palette pixel on the
+   board. Alpha blends two palette entries into a third that is neither;
+   a blur, a shadow or a gradient invents a whole ramp of them. None of
+   these existed on the hardware, so none may appear outside the marked
+   layers -- an alpha of exactly 1 is the one harmless reset. */
+const effects = [];
+for (const m of src.matchAll(/globalAlpha\s*([*+\-\/]?)=(?!=)\s*([^;\n]*)/g)) {
+  if (m[1] || m[2].trim() !== '1') effects.push(m[0].trim());
+}
+for (const re of [/create\w*Gradient\s*\(/g, /\.filter\s*=(?!=)[^;\n]*/g, /shadowBlur\s*=(?!=)[^;\n]*/g]) {
+  for (const m of src.matchAll(re)) effects.push(m[0].trim());
+}
+if (effects.length) {
+  console.log('  FAIL alpha, blur or gradients outside the glass layers:');
+  effects.forEach(e => console.log('     ' + e));
+  fail++;
+} else {
+  console.log('  PASS no alpha, blur, shadow or gradient touches the board');
 }
 
 // Resampling invents colors; it must be off wherever we blit.

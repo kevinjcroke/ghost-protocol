@@ -52,6 +52,12 @@ const sandbox = {
   performance: { now: () => 0 },
 };
 sandbox.window.AudioContext = undefined;
+/* prefers-reduced-motion, as a browser answers it: one MediaQueryList whose
+   .matches is live. The game keeps the list, not the answer, so a test can
+   flip it mid-run and the next frame sees the change. */
+const reducedMotionMQ = { matches: false };
+sandbox.window.matchMedia = (q) =>
+  (/prefers-reduced-motion/.test(q) ? reducedMotionMQ : { matches: false });
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 
@@ -65,6 +71,22 @@ const src = fs.readFileSync(require('path').join(__dirname, '..', 'game.js'), 'u
        get TUNNEL_ROWS() { return TUNNEL_ROWS; },
        resumeFromCommand, stalledHunter, startDemo, openHelp, closeHelp, render, Sound,
        rosterUI, helpUI, input, HELP_ROWS,
+       frame, pauseToCommand, fx, fitText, springIn, easeOut,
+       bankBand, splitBank, SPLIT_TICKS, syncShell, shell,
+       bountyNow, dotsLeftNow, driftTiles, runOutFrom, orderTicks, cardState, pillState,
+       BOOST_TICKS, CAMP_CHOICES, TOKENS, pillAnim, HELP_CHIP,
+       surveyWave, WAVE_TICKS, WAVE_FLARE, SHADOW, SHADOW_DROP, SHADOW_LIFT,
+       routeOrder, hotBeadsNow, computeHotBeads, hunterDrawOrder,
+       pointerTarget, syncCursor, ctlLook, PRESS_SCALE, TAP_SLOP_TOUCH,
+       dragTag, drawDragTag, tagAnim, TAG_LIFT, pincerFor, handTicks,
+       releaseRing, shellAlpha, transmitT, TRANSMIT_TICKS, pincerEar, PINCER_GAP,
+       fxIn, drawStatusPill, pillBox, plateShadows, plateShadow, drawPlateShadow,
+       get TYPE() { return TYPE; },
+       get uiDpr() { return uiDpr; },
+       get screenCtx() { return screenCtx; },
+       get nativeCtx() { return nativeCtx; },
+       get uiFrame() { return uiFrame; },
+       get uiClock() { return uiClock; },
        get dots() { return dots; },
        get dotTotal() { return dotTotal; },
        get touchMode() { return touchMode; },
@@ -83,6 +105,8 @@ function fire(target, type, ev) {
 sandbox.__api.fire = fire;
 sandbox.__api.screen = screen;
 sandbox.__api.win = sandbox.window;
+sandbox.__api.doc = sandbox.document;
+sandbox.__api.reducedMotionMQ = reducedMotionMQ;
 
 /* Touches, assembled the way a TouchEvent carries them: `touches` is every
    finger still on the glass, `changedTouches` only the ones this event is

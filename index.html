@@ -31,21 +31,86 @@
     gap: 10px;
     height: 100dvh;   /* the URL bar comes and goes; 100% does not notice */
   }
+  /* The room the cabinet stands in. When time stops it takes the light of
+     the ghost you are talking to -- amber instead while one is overdue and
+     the game refuses to run. The game only sets classes on body and the
+     ghost's color in --accent (see syncShell in game.js); every look lives
+     here. Nothing below may transform, filter or resize #cabinet or
+     #screen: the board is an integer-scaled raster and the hit-testing
+     reads its rect, so the room changes color and never geometry. */
+  @property --lit {
+    syntax: '<color>';
+    inherits: true;
+    initial-value: #5878ff;
+  }
+  body {
+    --accent: #5878ff;
+    --lit: var(--accent);
+    transition: --lit 200ms ease-out;
+  }
+  body.blocked { --lit: #ffb040; }
+  /* The light is a wrapper's, not the cabinet's. #cabinet clips its own
+     children, so a glow on one of its pseudo-elements would be cut off at
+     the bezel -- and a positioned pseudo-element would paint over the
+     canvas and tint the board. isolation keeps the light behind the
+     cabinet but in front of the page. */
+  #stage {
+    position: relative;
+    isolation: isolate;
+  }
+  #stage::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: 14px;
+    box-shadow: 0 0 140px 36px var(--lit);
+    opacity: 0;
+    transition: opacity 90ms ease-in;
+  }
+  body.frozen #stage::before {
+    opacity: 0.3;
+    transition: opacity 160ms ease-out;
+  }
   #cabinet {
     position: relative;
     line-height: 0;
     border-radius: 14px;
     overflow: hidden;
+    /* three layers in every state, so the change is a transition and not
+       a swap: instrument ring, outer glow, the glass's own inner shade */
     box-shadow:
+      0 0 0 0 transparent,
       0 0 90px 8px rgba(33, 48, 240, 0.18),
       0 0 8px 2px rgba(0, 0, 0, 0.9) inset;
+    transition: box-shadow 90ms ease-in;
+  }
+  body.frozen #cabinet {
+    box-shadow:
+      0 0 0 1px var(--lit),
+      0 0 90px 8px rgba(33, 48, 240, 0.18),
+      0 0 8px 2px rgba(0, 0, 0, 0.9) inset;
+    transition: box-shadow 160ms ease-out;
+  }
+  @supports (color: color-mix(in srgb, red 50%, transparent)) {
+    body.frozen #cabinet {
+      box-shadow:
+        0 0 0 1px var(--lit),
+        0 0 36px 3px color-mix(in srgb, var(--lit) 40%, transparent),
+        0 0 8px 2px rgba(0, 0, 0, 0.9) inset;
+    }
   }
   #screen {
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     display: block;
   }
+  /* Two lines share one slot. The resting one (the first-visit pointer)
+     sets the slot's size, and the live instruction is laid over it rather
+     than beside it, so swapping them can never change the hint's height
+     and nudge the cabinet under a finger that is mid-drag. */
   #hint {
+    position: relative;
     font: 11px/1.6 ui-monospace, Menlo, Consolas, monospace;
     letter-spacing: 0.08em;
     color: #8fa0c0;
@@ -55,15 +120,39 @@
     text-wrap: balance;
   }
   #hint b { color: #f0c897; font-weight: 600; }
+  #hint-idle { transition: opacity 90ms ease-in; }
+  #hint-live {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;   /* overflows both ways, so it stays centred */
+    white-space: nowrap;
+    font: 600 13px/1 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    letter-spacing: 0.06em;
+    color: #e8edff;
+    opacity: 0;
+    transition: opacity 90ms ease-in;
+  }
+  body.frozen #hint-idle { opacity: 0; transition: opacity 160ms ease-out; }
+  body.frozen #hint-live { opacity: 1; transition: opacity 160ms ease-out; }
+  body.blocked #hint-live { color: #ffb040; }
   /* narrow glass: the hint wraps to two lines rather than running off it */
   @media (max-width: 520px) {
     #hint { font-size: 10px; letter-spacing: 0.05em; }
+    #hint-live { font-size: 12px; letter-spacing: 0.03em; }
+  }
+  /* Everything still changes state; nothing travels to get there. */
+  @media (prefers-reduced-motion: reduce) {
+    body, #stage::before, #cabinet, #hint-idle, #hint-live,
+    body.frozen #stage::before, body.frozen #cabinet,
+    body.frozen #hint-idle, body.frozen #hint-live { transition: none; }
   }
 </style>
 </head>
 <body>
-  <div id="cabinet"><canvas id="screen"></canvas></div>
-  <div id="hint">NEW HERE? CLICK THE <b>?</b> CHIP, TOP RIGHT &nbsp;&middot;&nbsp; THE CLICK IS THE CLOCK</div>
+  <div id="stage"><div id="cabinet"><canvas id="screen"></canvas></div></div>
+  <div id="hint"><span id="hint-idle">NEW HERE? CLICK THE <b>?</b> CHIP, TOP RIGHT &nbsp;&middot;&nbsp; THE CLICK IS THE CLOCK</span><span id="hint-live"></span></div>
   <script>
     /* The shell speaks the same idiom the game does. A phone player has no
        click to give, and the ? chip is the one control worth pointing at
@@ -74,7 +163,7 @@
         var coarse = navigator.maxTouchPoints > 0
           && !(window.matchMedia && window.matchMedia('(pointer: fine)').matches);
         if (coarse) {
-          document.getElementById('hint').innerHTML =
+          document.getElementById('hint-idle').innerHTML =
             'NEW HERE? TAP THE <b>?</b> CHIP, TOP RIGHT &nbsp;&middot;&nbsp; THE TAP IS THE CLOCK';
         }
       } catch (e) {}
