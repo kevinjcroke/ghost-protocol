@@ -1,351 +1,257 @@
 # GHOST PROTOCOL
 
-An arcade maze game where the hunt runs backwards. **You are the ghosts.**
-The yellow one is the AI, and he is running for his life.
+**An arcade maze game where the hunt runs backwards. You are the ghosts.**
+The yellow one is an AI, and he is running for his life.
 
 ## ▶ [Play it in your browser](https://kevinjcroke.github.io/ghost-protocol/)
 
-**https://kevinjcroke.github.io/ghost-protocol/** — desktop or phone, mouse or
-one finger. New here? Click the **?** chip in the top right corner for the
-illustrated manual.
+**https://kevinjcroke.github.io/ghost-protocol/** — works on desktop and on
+phones, with a mouse or a single finger. New here? Click the **?** chip in
+the top right corner for the illustrated manual.
 
-To run it locally, open `index.html`. That's it — vanilla JavaScript, one
-Canvas, no build step, no dependencies, no assets to download.
+---
 
 ## The idea
 
-In every maze game ever made you are the thing being chased. Here you command
-all four hunters, and the prey is a genuinely good escape AI: he counts your
+In every maze game ever made, you are the one being chased. Here you command
+all four hunters, and the prey is a genuinely good escape AI. He counts your
 threats, prefers corridors with the most exits, farms dots when he's safe,
 makes hard runs at the energizers when cornered, abuses the side tunnels, and
-punishes any hunter you left parked and stupid.
+punishes any ghost you left parked and stupid.
 
-You cannot steer a ghost directly. You freeze time and **draw** where it walks.
+You can't steer a ghost directly. You **freeze time** and **draw** where it
+walks. Then you let the clock run and watch your plan play out, or fall
+apart.
+
+## How to play
+
+1. **Click anywhere** during play to freeze time.
+2. **Drag from a ghost** to draw the route it will walk, tile by tile through
+   the corridors.
+3. **Click empty maze** (or the green ▶) to let time run again.
+
+Catch him three times to clear the board. If he eats every dot first, you
+lose the board. Losing three boards ends the game.
+
+### The one rule
+
+**A ghost with no orders is stupid.** It keeps going in its current direction,
+straight through every intersection, until it hits a wall. Then it stops dead
+and stays there until you give it a new route. A ghost that reaches the end of
+its route does the same. There is no autopilot, no fallback AI, and no "return
+to patrol" that you didn't draw.
+
+Four ghosts, one mouse, one brain. The game is the coordination. Chase him
+with one ghost at a time and you will lose: he is slightly faster than any
+single ghost, and faster still when only one is after him.
 
 ## Controls
 
 | Input | Effect |
 | --- | --- |
-| Click the attract screen | Start |
+| Click the attract screen | Start a game |
 | **Click anywhere during play** | Freeze time |
-| **Click empty maze while frozen** | Resume — the click is the clock |
-| **Grab a ghost mid-play** | Freezes *and* starts its trail in one gesture |
-| **SPACE** or **P** | Freeze / unfreeze from the keyboard |
-| **Esc** | Resume (or close the manual) |
-| **Drag from a ghost** | Hand-draw the path it will walk |
-| **Drag from a ghost in the den** | Its route out — the only thing that lets it leave |
-| Drag back along the line | Retracts it, like an undo |
-| Return the tip to the start tile, release | Closes it into a **patrol loop** the ghost walks forever |
-| **Drag a route down onto the den door** | Sends that ghost **home**: it goes in and waits, charged, for a route out. The line ends in a little den instead of an arrowhead |
-| Click a route's arrowhead | Picks the line back up and continues drawing it |
-| Right-drag over a path | Erases from that point |
-| **1–4** / **Tab** or the roster buttons | Select a ghost (it floats to the top of any pile) |
-| Click a pile of ghosts repeatedly | Cycles through the ones stacked there |
-| **? chip (top right)** or **H** | The pocket manual: eight rules with figures. Opening it freezes play |
+| **Click empty maze while frozen** | Resume. The click is the clock |
+| **Grab a ghost during play** | Freezes *and* starts drawing its route, in one gesture |
+| **Drag from a ghost** | Draw the route it will walk |
+| Drag back along the line | Retract it, like an undo |
+| Bring the tip back to the start tile and release | Close it into a **patrol loop** the ghost walks forever |
+| **Drag a route onto the den door** | Send that ghost **home** (see *The den*) |
+| Click a route's arrowhead | Pick the line back up and keep drawing |
+| Right-drag over a route | Erase it from that point |
+| Click a pile of ghosts repeatedly | Cycle through the ones stacked there |
+| Roster buttons, **1–4** or **Tab** | Select a ghost; it floats to the top of any pile |
+| **Space** or **P** | Freeze / resume from the keyboard |
+| **Esc** | Resume, or close the manual |
+| **? chip** or **H** | The pocket manual (freezes play while open) |
 | **M** | Mute |
 
-There is deliberately no "clear order" gesture: drawing a new order *is* the
-clear, so no click can ever silently disarm a ghost.
+There is no "clear order" button on purpose: drawing a new route *is* the
+clear, so no click can ever silently disarm a ghost. The whole game is
+playable with the mouse alone.
+
+The route follows your cursor one legal step at a time and never invents a
+detour. Drag into a wall and the tip waits at the last tile it could reach.
+Routes may cross themselves as often as you like.
 
 ### On a phone
 
-One finger does everything in the table above — tap where it says click, drag
-where it says drag. The whole game was already mouse-only by design, so
-nothing had to be invented for touch and nothing is hidden behind a gesture
-you have to be told about.
+One finger does everything in the table above: tap where it says click, drag
+where it says drag. There are no multi-touch gestures. A few details differ
+because a fingertip isn't a cursor:
 
-Four deliberate differences, all because a fingertip is not a cursor:
+- **A tap resumes when you lift your finger, not when you touch.** If your
+  thumb lands and slides, the game stays frozen.
+- **A quick tap counts as a tap** even if your thumb rolled a little.
+- **Ghosts and arrowheads are bigger targets** under a finger. A near miss
+  selects a ghost rather than resuming the game.
+- **To draw through a side tunnel,** press into the edge of the screen on a
+  tunnel row.
+- There is no touch version of right-drag erase. Redrawing a route replaces
+  it anyway.
 
-- **A tap resumes on release, not on contact.** Restarting the clock is the
-  one move you cannot take back. A thumb that lands and then slides has
-  changed its mind, and the game stays frozen.
-- **A tap is judged by time as well as distance.** A finger rolls further
-  than any drag threshold you would dare set, so a press that lands and
-  lifts inside a quarter second is a tap whatever the thumb did in between —
-  and it browses the pile from where it *landed*, not where it lifted.
-- **Ghosts and arrowheads are finger-sized targets.** The pick reach widens
-  under a finger, and the error that buys is the safe one: a near-miss
-  selects a ghost instead of falling through to the tap that means "go".
-- **Pressing against the screen edge draws through the tunnel.** A mouse
-  sails off the canvas to ask for the wrap tile; a finger hits glass. On a
-  tunnel row, a pointer parked in the outermost strip of the playfield
-  targets the far mouth and the tip walks the tunnel.
+## Reading the frozen screen
 
-There is no finger equivalent of right-drag erase, on purpose: multi-touch
-would be the most fragile thing on the phone in exchange for an edit that
-redrawing already covers. The manual and the attract screen re-word
-themselves when they see a finger.
+When time stops, the maze dims to its night palette and a planning layer comes
+up over it.
 
-**The camp limit is yours to set.** A ghost that runs off the end of its path
-coasts on its last heading until a wall stops it dead — and then it may stand
-there, legally camping, for as long as your **CAMP LIMIT** allows (the chip
-above the roster: 0s / 3s / 5s / 10s / OFF, click to cycle, remembered
-between sessions). Past the limit the ghost goes overdue: the game freezes
-with it pre-selected and will not resume until it has somewhere to be. Set
-the limit OFF and the original cruelty rule returns undiluted — no forced
-pauses, ghosts camp forever, and nobody saves you from a forgotten statue.
+- **Squad cards** along the bottom show each ghost's state and one number
+  that matters: `ROUTE 3.2s`, `LOOP 6.0s`, `STOPS IN 4 TILES`, `HOME IN 2.4s`,
+  `BACK IN 3.1s`, and so on. Every figure is exactly what the simulation will
+  do. A green dot means the ghost has orders.
+- **The status pill** at the top counts how many ghosts have orders and shows
+  what a catch would be worth right now. It turns amber and names the ghost
+  when one needs orders.
+- **Timing beads** mark every route at equal *travel time*, not equal
+  distance. Where two ghosts' beads land on the same spot at the same time,
+  both light up white. That's your instrument for timing a pincer: count
+  beads, not tiles.
+- **The run-out** is the faint line past an arrowhead: the coast a ghost will
+  make after its route ends, and the wall it will stop at.
+- **While you draw,** a small tag shows the route's time, and a chime sounds
+  when it lines up a pincer with another ghost.
+- The glow around the game takes the selected ghost's color, and turns amber
+  when a ghost is overdue.
 
-The roster reads the whole squad at a glance, and every figure on it is
-what the machine will then do, tick for tick: `ROUTE 3.2s`, `LOOP 6.0s`,
-`HOME IN 2.4s` (a route home, timed to the doorstep where it goes in),
-`STOPS IN 4 TILES` (coasting toward its stall), `5s LEFT` (parked, counting
-down to intervention), `CAMPED` (parked with the limit off), `NEEDS ORDERS`
-(overdue, blocking the resume), `OVERDRIVE 4.1s`. The den has its own
-words: `HEADING HOME` and `BACK IN 3.1s` for an eaten ghost, greyed, with
-its portrait gone to eyes; `LEAVES IN 3.1s` once you have queued its route
-out; `HOME · READY` for a whole ghost waiting on your orders, and `HOME ·
-LEAVING` once you've drawn it out; `HOME · GOING IN` (or `HOME · BACK OUT`,
-with a route out already queued) and `LEAVING DEN` on the way through the
-door. The green dot means the same thing on every card — that ghost has
-orders — so a ready den ghost only turns green once it has a route. Every
-label has a shorter form for a phone's card. The status pill counts the den like everyone else:
-a ghost sitting in there is not ordered until it has a route. The play
-button burns amber while anyone is overdue and goes green when the squad is
-ready.
+### The camp limit
 
-Ghosts pile onto the same tile constantly — every one of them leaves the den
-by the same door — and a click can only land on one. So each keeps a permanent number
-and a button. The roster along the bottom of the frozen screen shows who is
-who and which of them currently has somewhere to be: click a name to select
-that ghost (it floats to the front of whatever pile it's standing in), press
-its number, or click the green **▶** to unfreeze — the whole game is playable
-without touching the keyboard.
+A ghost that has stopped against a wall may stand there for as long as your
+**camp limit** allows: 0s, 3s, 5s, 10s or OFF. Click the chip above the cards
+to cycle it; the setting is remembered. Past the limit, the game freezes with
+that ghost selected and won't resume until you give it somewhere to go. Set it
+to OFF and nothing saves you from a forgotten ghost.
 
-The prize that appears under the den is worth exactly one thing: **overdrive**.
-A hunter routed over it first flashes white-hot and can flat outrun him for
-eight seconds — the only window where pursuit beats flight. No points either
-way; if he reaches it first, the weapon is simply gone.
+## The den
 
-The drawn line is not a route the computer picked for you. It follows your
-cursor tile by tile through the corridors, orthogonally, refusing walls. Drag
-into a wall and the tip waits at the last legal tile until you move somewhere
-it can reach. It may cross itself as often as you like.
+The ghost house in the middle of the maze plays by three rules.
 
-This matters more than it sounds. An earlier version quietly pathfound to
-wherever your cursor was, and dragging straight down a walled column turned a
-fourteen-tile order into a forty-tile horseshoe — which, at this resolution,
-looks much like the line you meant to draw until you unfreeze and watch a
-ghost set off the wrong way. The tip now only ever takes one legal step at a
-time toward your cursor, and stalls rather than inventing a detour.
+- **Nobody leaves without a route.** RAZE, the red ghost, starts each life
+  outside. The other three wait inside until you draw them out; drawing the
+  route is the release. A ghost waiting in the den is safe and never counts
+  against the camp limit.
+- **The den is a recharge.** Draw a route onto the door and that ghost walks
+  home. Inside, it is always its true color, never blue. Any ghost leaving the
+  den comes out dangerous, even while he is still powered up. See the next
+  section for why that matters.
+- **Eaten ghosts wait as eyes.** A ghost he eats walks home as a pair of eyes
+  and sits in the den *as eyes* for five seconds before its body returns. You
+  can draw its route out while it waits; it leaves the moment it's ready.
 
-### Timing beads
+Stuck and ready ghosts look different at a glance: a stuck ghost is just eyes,
+and a ready ghost is its whole body looking up at the door.
 
-Every drawn path is marked at equal *travel time*, not equal distance. Where
-two hunters' beads coincide in both time and space, both light up white —
-that's the instrument for timing a four-way pincer. Count beads, not tiles.
+## Energizers and the ambush
 
-### The run-out
+When he eats one of the four energizers, the roles flip for a few seconds.
+Your ghosts turn blue, and he can eat them. Blue ghosts still follow your
+routes exactly; they don't run away on their own. Getting them out of his way
+is your problem, and blocking him off an energizer is a real tactic.
 
-An open path shows a sparse continuation past its arrowhead: the coast a
-hunter makes on its last heading after the order ends, and the tile a wall
-will actually stop it on. The rule isn't softened, it's just no longer a
-surprise.
+Your counterattack is the den. Send a blue ghost home. It goes in blue, and
+when you draw it back out it comes out in its own color and can catch him,
+while he still thinks he's the hunter. He will often chase a fleeing blue
+ghost right up to the door, and that chase is your ambush.
 
-## The rule that makes it a game
+The window shrinks as you climb: energizers last seven seconds on level 1 and
+two seconds from level 10, so the ambush is strongest early.
 
-**A ghost with no order is stupid.** It continues in its current direction
-forever, through every intersection, until it hits a wall — and then it stops
-dead and stays stopped until you give it a new order. A ghost that runs off the
-end of a drawn path does the same thing. There is no autopilot, no fallback AI,
-no "return to patrol" you didn't draw.
+The prize that appears under the den gives **overdrive**. The first ghost
+routed over it can outrun him for eight seconds, the only time pursuit beats
+flight. If he reaches it first, it's simply gone.
 
-Four ghosts, one mouse, one brain. The game is the coordination.
+## Scoring, lives and levels
 
-Command one ghost at a time and you will lose. The score knows: there is one
-number, and it is a speed meter — **the dots he never got, times the level**,
-banked at *each* capture. Catch him fast and the board pays; let him graze
-first and it doesn't. A multi-directional pincer earns its banner and
-fanfare, and its real reward is built in: pincers catch him sooner, and
-sooner *is* the score. The rising siren and the falling payout are the same
-clock.
+**The score measures speed.** Each catch banks the dots he never got, times
+the level. Catch him fast and the board pays; let him graze first and it
+doesn't. Pincers catch him sooner, and sooner is the score.
 
-**He has three lives per board**, the way the original's yellow guy did — his
-reserve sits in the bottom HUD row next to your contracts. A capture spends
-one: everyone resets to spawn, a fresh READY, redraw your plans. But the
-dots he ate **stay eaten**. His grazing is progress you can never give back,
-which cuts both ways: each of his lives is worth less to you than the last
-(fewer dots left to bank), and each is more dangerous to you than the last
-(he's that much closer to clearing the maze, and the energizers he's already
-spent are gone too). Only the third catch flashes the board and advances the
-level. The extra board arrives at 10000.
+**He has three lives per board.** A catch spends one: everyone resets, and you
+redraw your plans. But the dots he ate **stay eaten**, so each life is worth
+less to you and he is closer to clearing the maze. The third catch clears the
+board. You start with three boards to lose and earn one more at 10,000
+points.
 
-Your ghosts are *not* slower than him in any meaningful way — they run at
-near parity. Their handicap is that they cannot improvise. He re-decides at
-every junction; your four walk exactly what you drew and nothing else. That
-asymmetry is the game.
+**Each level,** he gets faster, looks further ahead, and takes more risks.
+Energizers get shorter. The maze changes too: three original boards rotate
+with the levels, each with its own frame color and number of wrap tunnels.
 
-**He doesn't read your routes. He assumes the worst.** Every moving ghost
-counts, in his head, as one that could be coming at him down the shortest
-corridor at full hunting speed, whatever you actually drew for it. A parked
-ghost is a statue that could wake the moment you give it an order. The only
-thing your drawing tells him is which ghosts are moving, and that is plain
-on the board anyway. This is deliberate. Freezing is free and unlimited, so
-a prey that trusted your routes could be lied to forever: draw a decoy, let
-him commit, freeze, redraw. Planning against the worst leaves nothing to
-bluff. You win by closing exits, not by fooling him.
+**He doesn't read your routes.** He assumes the worst: every moving ghost
+might be coming at him down the shortest corridor at full speed, whatever you
+actually drew. That's deliberate. Freezing is free, so an AI that trusted your
+routes could be fooled forever with decoys. You win by closing his exits, not
+by bluffing.
 
-### Energizers invert
+## Design notes
 
-When he eats an energizer the roles flip for a few seconds: your hunters turn
-blue and he can eat them, sending them back to the den as bare eyes that sit
-five seconds in there before they can come out. Or beat him to it and draw a
-blue ghost home yourself (see *The den*). The four energizers are ticking
-bombs on your board. Frightened hunters obey the
-exact same order and wall rules — being blue does not make them run away by
-themselves. That's your problem to solve, and body-blocking him off an
-energizer is a real tactic.
+### Two worlds on one screen
 
-### The den
+The maze obeys 1981 arcade hardware rules: 224×288 native resolution, a
+fixed color palette whose every channel sits on a period resistor ladder, no
+transparency, 1:1 sprites on an 8×8 tile grid, and integer nearest-neighbor
+scaling under a light CRT pass (scanlines, phosphor bloom, vignette). Even
+freezing time is a palette *bank* swap, not a dimming effect, because that
+hardware couldn't blend a framebuffer.
 
-**Nobody leaves the den without a route.** RAZE opens every life outside
-the door; the other three sit inside until you draw them out, and drawing
-the route is the release. There is no timer letting anyone out behind your
-back — and the route has to last the whole way out: erase it while the
-ghost is still on its way up through the door and it goes back to its seat.
+The planning layer deliberately breaks all of those rules. Routes, beads,
+cards and the manual render after the CRT pass at full display resolution,
+with smooth curves, glow, modern type and colors no 1981 color chip could
+produce. The maze is a machine from 1981; the planning layer is you reaching
+through the glass at it. The pellets and sprites are drawn back on top, so a
+route never hides the food it crosses.
 
-**The den is a recharge.** Draw a route down onto the door and that ghost
-walks home, goes in with its own colour on — never blue in there — and waits.
-Leaving the den always sheds the blue, so a ghost you dunk while he is on his
-energizer run comes back out able to catch him while he still thinks he is
-the hunter. The walk is the whole price; a route home is terminal (nothing
-extends past the door, and it can't be part of a patrol loop). Waiting in
-the den is legal for as long as you like: it never runs the camp clock and
-never holds up the resume.
+`test/palette-lock.js` enforces the boundary: anything outside the CRT pass and
+the planning layer must use the fixed palette.
 
-**Getting eaten is strictly worse.** An eaten ghost walks home as eyes and
-sits in the den *as eyes* for five seconds before it gets its body back —
-so you can always tell who is stuck and who is ready. A route drawn for it
-meanwhile is kept, and it goes the moment the wait is over.
+### About the assets
 
-**You can read the den at a glance.** On the board a ghost that is stuck
-is only its eyes, looking at the floor; a ghost that is ready is its whole
-body in its own colour, looking up at the door. Frozen, the ready ones also
-wear a small chevron pointing at the door, and their cards say `HOME ·
-READY` where the stuck ones count down `BACK IN 3.1s`. A route drawn home
-ends in a little den instead of an arrowhead, with no coast past it, and its
-beads stop at the doorstep, because that is where the ghost hands itself to
-the den. A blue one is safe from that tick; a hunting one still catches him
-on the doorstep row until it starts down through the door — touch is
-capture there like everywhere else, and he knows it. The machine says it too: a short clunk when a ghost goes through the
-door on your orders, and two soft notes when a den ghost is whole and ready.
-Neither stops the game.
+The [original brief](ghost-protocol-prompt.md) asked for ripped Namco arcade
+assets (ROM sprite dumps, the real palette, maze and sound samples) so the
+result would be indistinguishable from *Pac-Man*. **That part was deliberately
+not done.** Those assets are copyrighted, and this project doesn't use them.
 
-**He knows what the den holds, not what you'll do with it.** A whole ghost
-inside is a hunter on a delay, and he can see it. While he is energized he
-gives the corridor outside the door a wide berth in proportion to how soon a
-charged ghost could be out — with some benefit of the doubt on the first
-boards and none from level 7. Once you draw its route out, the ghost starts
-for the door on that tick, and he treats the door as a hunter about to come
-through it. That's the same worst case he plans for with every moving ghost:
-he doesn't know where the route goes after the door, only that something is
-coming out. He still chases a blue ghost running for home right up to the
-door; that chase is your ambush. Eyes are nothing to him, route or no route, because nothing gets
-them out before their wait is over.
+Everything here is original work in the 1981 arcade idiom: the three mazes,
+the hand-authored pixel sprites and font, the palette, and all audio, which is
+synthesized live with the Web Audio API. The siren, chomp, energizer wobble,
+round-start jingle and the rest were composed for this game. The audio plays
+the role reversal straight: the death spiral sounds when *you* lose a ghost,
+and the rising siren is the clock on your board.
 
-## Progression
+## Running it locally
 
-Win a board by catching him three times. Lose one if he clears every dot —
-across however many lives he has left, since the dots stay eaten. Each level he
-gets faster, his lookahead deepens, and his willingness to gamble on a feint
-goes up. What he knows never changes: at every level he plans against the
-worst your ghosts could do, never against what you drew. The benefit of the
-doubt he gives the den door runs out by level 7. Frightened time shortens,
-so the den ambush fades as the boards climb.
-
-## About the assets
-
-The original brief asked for ripped Namco arcade assets — ROM sprite dumps, the
-real palette, the original maze, the actual sound samples — so the result would
-be indistinguishable from *Pac-Man*. **That part was deliberately not done.**
-Those assets are copyrighted, and this project doesn't ship them, even as a
-personal project. The brief is kept in `ghost-protocol-prompt.md` as a record.
-
-Everything here is original work in the 1981 arcade idiom, built to the same
-hardware constraints the real cabinets had:
-
-- **Mazes**: three original 28x31 boards that rotate with the levels, each
-  with its own frame color: a blue opener with one wrap tunnel (levels 1–2), a
-  green board with two (3–5), an orange one with three (6–9), and then the
-  last two alternate. All are mirror-symmetric with single-width corridors,
-  four energizers and the same central den. Every board is machine-verified
-  for full connectivity and has no dead ends.
-- **Sprites**: hand-authored pixel art on the native grid, 16x16 on an 8x8 tile
-  background, drawn as character-ROM style bitmaps in code.
-- **Palette**: a small fixed color table. Frozen time uses a second palette
-  *bank* rather than alpha blending, because the hardware being imitated could
-  not blend a framebuffer.
-- **Audio**: synthesized from scratch with the Web Audio API — square and
-  triangle waves through a low-pass filter standing in for a cabinet speaker.
-  The four-stage siren, the chomp, the energizer wobble, the dissolve spiral,
-  and the round-start jingle are all composed for this game.
-- **Presentation**: 224x288 native, integer nearest-neighbor scaling only, with
-  a light CRT pass — scanlines, phosphor bloom, vignette.
-
-There is exactly one deliberate exception, and it's the point of the game.
-**The orders you draw are not a 1981 artifact.** The trails, beads, arrowheads
-and roster render *after* the CRT pass, at full display resolution, with
-smooth curves, additive glow and colors no color PROM could produce. The board
-is a machine from 1981; the command layer is you reaching through the glass at
-it. The pellets and sprites are then punched back over the top, so an order
-never hides the food it's drawn across.
-
-`test/palette-lock.js` enforces the boundary: everything outside the CRT pass
-and the command layer must come from the fixed table.
-
-The role reversal is wired through the audio too: the death spiral now plays
-when *we* lose a hunter, and the siren's rising pitch is a threat clock
-counting down our board.
+Clone the repo and open `index.html`. That's it: vanilla JavaScript, one
+Canvas, no build step, no dependencies and no assets to download. `game.js`
+holds the whole game.
 
 ## Tests
 
 No framework, no install. `test/harness.js` boots `game.js` in Node behind a
-stub DOM, so the whole game can be exercised headlessly in a minute or two.
+stub DOM, so the game can be exercised headlessly.
 
 ```bash
 node test/test-game.js && node test/validate-maze.js && node test/no-infinite-lanes.js && node test/palette-lock.js
 ```
 
-- **test-game.js** — 402 checks. The game: path retraction, loop closure,
-  self-crossing, the refusal to reroute, orders queued from the den, the
-  route-only den release, the trip home and the den ambush, his read of the
-  den door, how a stuck ghost and a ready one read on the board, the glass
-  and the cards, the wall-stop rule, the energizer role reversal, eyes and
-  respawn, capture and
-  pincer scoring, his three lives and the dots that stay eaten across them,
-  board loss, level flow, touch input through real events, and a 30,000-tick
-  soak. The glass: that freeze and resume flip on the click tick while every
-  effect only follows; that each way of stopping time starts the freeze from
-  the right place; that hit rects never move with the cards; that every
-  figure on a card, the pill or the drag tag is what the simulation then
-  does, tick for tick (routes, loops, tunnels, overdrive, a ghost turned
-  round mid-tile, a drift through the wrap zone, the bounty); that the pill
-  stays in its HUD row and every word stays on its own card at real phone
-  sizes and densities; fitText's shrink, short labels and floor; that the
-  glass asks for no live blur; that a resize mid-freeze starts it afresh;
-  and that prefers-reduced-motion snaps everything.
+- **test-game.js** — 402 checks covering the drawing rules, the wall-stop
+  rule, the den, energizers and the ambush, capture and scoring, lives and
+  levels, touch input through real events, the frozen screen's timing and
+  numbers, and a 30,000-tick soak. Takes a minute or two.
 - **validate-maze.js** — proves every board is mirror-symmetric, fully
   connected, and free of dead ends and 2×2 rooms.
 - **no-infinite-lanes.js** — walks every straight run on all three boards
-  (4,592 of them) and proves each one ends at a wall. Without this the wall-stop rule can be
-  silently cancelled by a corridor that wraps the full width, which is exactly
-  what the first version of the maze did.
-- **palette-lock.js** — fails on any color off the ladder, any enabled image
-  smoothing, any sprite blitted at a scale other than 1:1, or any alpha,
-  blur, shadow or gradient outside the CRT pass and the command layer.
-  Resampling and blending invent colors that were never in the palette.
-- **speed-audit.js** / **difficulty-curve.js** — measure what the tuning
-  tables actually produce: tiles covered per second by each side, and — since
-  a board is now three catches with three chances, making win rate a soft
-  ruler — the *cleanliness* of each catch (dots still on the board when he
-  was caught, the level-normalized half of the score) for a coordinating
-  player versus a one-ghost-at-a-time player across levels 1–20.
+  (4,592 of them) and proves each one ends at a wall. Without it, a corridor
+  that wraps all the way around could quietly cancel the wall-stop rule. The
+  first version of the maze had exactly that bug.
+- **palette-lock.js** — fails on any color off the palette, any image
+  smoothing, any sprite drawn at a scale other than 1:1, or any transparency,
+  blur, shadow or gradient outside the CRT pass and the planning layer.
+- **speed-audit.js** and **difficulty-curve.js** — measure what the tuning
+  tables actually produce, such as each side's speed and how cleanly a
+  coordinated player catches him compared with a one-ghost-at-a-time player
+  across levels 1–20. `difficulty-curve.js` takes about ten minutes.
 
 ## Credits
 
 Mechanics reference: **[bward2/pacman-js](https://github.com/bward2/pacman-js)**
-(MIT). Its tile-locked movement model — the snapped/unsnapped split, crossroad
-snapping, adjacency-based move selection — and its speed-ratio and level
-progression tables were studied while building this. No code, art, or audio was
-copied; the rendering layer here is Canvas rather than DOM/SVG, and collision
-runs inside the fixed 60 Hz tick rather than on a separate interval. See
+(MIT). Its tile-locked movement model and its speed and level-progression
+tables were studied while building this. No code, art or audio was copied. See
 `LICENSE-pacman-js` for its license text.
