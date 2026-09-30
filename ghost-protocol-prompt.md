@@ -1,3 +1,9 @@
+> **Note:** This is the original brief the game was built from, kept as a
+> record. Its asset requirements were deliberately **not** followed: no Namco
+> sprites, palette, maze, audio or font were ripped or used, and no audio was
+> taken from the reference repo. Every asset in the game is original work in
+> the 1981 arcade idiom. See "About the assets" in [README.md](README.md).
+
 /goal
 
 I want you to build **GHOST PROTOCOL** — a 2D arcade game that is visually indistinguishable from the 1980 Namco *Pac-Man* arcade cabinet, but where **you play as the ghosts**.

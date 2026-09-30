@@ -3,8 +3,14 @@
 An arcade maze game where the hunt runs backwards. **You are the ghosts.**
 The yellow one is the AI, and he is running for his life.
 
-Open `index.html`. That's it — vanilla JavaScript, one Canvas, no build step,
-no dependencies, no assets to download.
+## ▶ [Play it in your browser](https://kevinjcroke.github.io/ghost-protocol/)
+
+**https://kevinjcroke.github.io/ghost-protocol/** — desktop or phone, mouse or
+one finger. New here? Click the **?** chip in the top right corner for the
+illustrated manual.
+
+To run it locally, open `index.html`. That's it — vanilla JavaScript, one
+Canvas, no build step, no dependencies, no assets to download.
 
 ## The idea
 
@@ -24,7 +30,8 @@ You cannot steer a ghost directly. You freeze time and **draw** where it walks.
 | **Click anywhere during play** | Freeze time |
 | **Click empty maze while frozen** | Resume — the click is the clock |
 | **Grab a ghost mid-play** | Freezes *and* starts its trail in one gesture |
-| **SPACE** | Freeze / unfreeze from the keyboard |
+| **SPACE** or **P** | Freeze / unfreeze from the keyboard |
+| **Esc** | Resume (or close the manual) |
 | **Drag from a ghost** | Hand-draw the path it will walk |
 | **Drag from a ghost in the den** | Its route out — the only thing that lets it leave |
 | Drag back along the line | Retracts it, like an undo |
@@ -34,7 +41,7 @@ You cannot steer a ghost directly. You freeze time and **draw** where it walks.
 | Right-drag over a path | Erases from that point |
 | **1–4** / **Tab** or the roster buttons | Select a ghost (it floats to the top of any pile) |
 | Click a pile of ghosts repeatedly | Cycles through the ones stacked there |
-| **? chip (top right)** or **H** | The pocket manual — eight rules with figures, freezes play while open |
+| **? chip (top right)** or **H** | The pocket manual: eight rules with figures. Opening it freezes play |
 | **M** | Mute |
 
 There is deliberately no "clear order" gesture: drawing a new order *is* the
@@ -250,15 +257,18 @@ so the den ambush fades as the boards climb.
 The original brief asked for ripped Namco arcade assets — ROM sprite dumps, the
 real palette, the original maze, the actual sound samples — so the result would
 be indistinguishable from *Pac-Man*. **That part was deliberately not done.**
-Those assets are copyrighted, and shipping them is not something I'll do even
-for a personal project.
+Those assets are copyrighted, and this project doesn't ship them, even as a
+personal project. The brief is kept in `ghost-protocol-prompt.md` as a record.
 
 Everything here is original work in the 1981 arcade idiom, built to the same
 hardware constraints the real cabinets had:
 
-- **Maze**: an original 28x31 layout — mirror-symmetric, single-width corridors,
-  two wrap tunnels, four energizers, a central den, machine-verified for full
-  connectivity and no dead ends.
+- **Mazes**: three original 28x31 boards that rotate with the levels, each
+  with its own frame color: a blue opener with one wrap tunnel (levels 1–2), a
+  green board with two (3–5), an orange one with three (6–9), and then the
+  last two alternate. All are mirror-symmetric with single-width corridors,
+  four energizers and the same central den. Every board is machine-verified
+  for full connectivity and has no dead ends.
 - **Sprites**: hand-authored pixel art on the native grid, 16x16 on an 8x8 tile
   background, drawn as character-ROM style bitmaps in code.
 - **Palette**: a small fixed color table. Frozen time uses a second palette
@@ -289,14 +299,13 @@ counting down our board.
 ## Tests
 
 No framework, no install. `test/harness.js` boots `game.js` in Node behind a
-stub DOM, so the whole game can be exercised headlessly in about thirty
-seconds.
+stub DOM, so the whole game can be exercised headlessly in a minute or two.
 
 ```bash
 node test/test-game.js && node test/validate-maze.js && node test/no-infinite-lanes.js && node test/palette-lock.js
 ```
 
-- **test-game.js** — 380 checks. The game: path retraction, loop closure,
+- **test-game.js** — 402 checks. The game: path retraction, loop closure,
   self-crossing, the refusal to reroute, orders queued from the den, the
   route-only den release, the trip home and the den ambush, his read of the
   den door, how a stuck ghost and a ready one read on the board, the glass
@@ -314,10 +323,10 @@ node test/test-game.js && node test/validate-maze.js && node test/no-infinite-la
   sizes and densities; fitText's shrink, short labels and floor; that the
   glass asks for no live blur; that a resize mid-freeze starts it afresh;
   and that prefers-reduced-motion snaps everything.
-- **validate-maze.js** — proves the board is mirror-symmetric, fully
+- **validate-maze.js** — proves every board is mirror-symmetric, fully
   connected, and free of dead ends and 2×2 rooms.
-- **no-infinite-lanes.js** — walks all 1,328 straight runs on the board and
-  proves every one ends at a wall. Without this the wall-stop rule can be
+- **no-infinite-lanes.js** — walks every straight run on all three boards
+  (4,592 of them) and proves each one ends at a wall. Without this the wall-stop rule can be
   silently cancelled by a corridor that wraps the full width, which is exactly
   what the first version of the maze did.
 - **palette-lock.js** — fails on any color off the ladder, any enabled image
