@@ -6,8 +6,15 @@ The yellow one is an AI, and he is running for his life.
 ## ▶ [Play it in your browser](https://kevinjcroke.github.io/ghost-protocol/)
 
 **https://kevinjcroke.github.io/ghost-protocol/** — works on desktop and on
-phones, with a mouse or a single finger. New here? Click the **?** chip in
-the top right corner for the illustrated manual.
+phones, with a mouse or a single finger. The **?** chip in the top right
+corner opens the illustrated manual.
+
+**First time?** Your first press starts a one-minute practice instead of a
+game: a few steps on the real board that end with your first catch. It's
+skippable at any point with **SKIP ›** on the card. To run it again, open the
+**?** manual and press **PRACTICE ▶**. To hand it to a friend, send this link,
+which always starts with the practice:
+**https://kevinjcroke.github.io/ghost-protocol/?tutorial**
 
 ---
 
@@ -49,7 +56,7 @@ single ghost, and faster still when only one is after him.
 
 | Input | Effect |
 | --- | --- |
-| Click the attract screen | Start a game |
+| Click the attract screen | Start a game (your very first click starts the practice) |
 | **Click anywhere during play** | Freeze time |
 | **Click empty maze while frozen** | Resume. The click is the clock |
 | **Grab a ghost during play** | Freezes *and* starts drawing its route, in one gesture |
@@ -57,6 +64,7 @@ single ghost, and faster still when only one is after him.
 | Drag back along the line | Retract it, like an undo |
 | Bring the tip back to the start tile and release | Close it into a **patrol loop** the ghost walks forever |
 | **Drag a route onto the den door** | Send that ghost **home** (see *The den*) |
+| **Drag off the screen edge** on a tunnel row | Send the route through the tunnel; keep dragging out there to carry on along the far side |
 | Click a route's arrowhead | Pick the line back up and keep drawing |
 | Right-drag over a route | Erase it from that point |
 | Click a pile of ghosts repeatedly | Cycle through the ones stacked there |
@@ -86,14 +94,16 @@ because a fingertip isn't a cursor:
 - **Ghosts and arrowheads are bigger targets** under a finger. A near miss
   selects a ghost rather than resuming the game.
 - **To draw through a side tunnel,** press into the edge of the screen on a
-  tunnel row.
+  tunnel row. The tip comes out the far side with its arrowhead; to keep
+  going, lift and drag on from that arrowhead.
 - There is no touch version of right-drag erase. Redrawing a route replaces
   it anyway.
 
 ## Reading the frozen screen
 
-When time stops, the maze dims to its night palette and a planning layer comes
-up over it.
+When time stops, the maze lifts off the old screen — solid walls, round dots,
+pure black, nothing of the CRT over it — and a planning layer comes up over
+it.
 
 - **Squad cards** along the bottom show each ghost's state and one number
   that matters: `ROUTE 3.2s`, `LOOP 6.0s`, `STOPS IN 4 TILES`, `HOME IN 2.4s`,
@@ -188,16 +198,22 @@ by bluffing.
 The maze obeys 1981 arcade hardware rules: 224×288 native resolution, a
 fixed color palette whose every channel sits on a period resistor ladder, no
 transparency, 1:1 sprites on an 8×8 tile grid, and integer nearest-neighbor
-scaling under a light CRT pass (scanlines, phosphor bloom, vignette). Even
-freezing time is a palette *bank* swap, not a dimming effect, because that
-hardware couldn't blend a framebuffer.
+scaling under a light CRT pass (scanlines, phosphor bloom, vignette). That is
+the board you play on, and it stays exactly that.
 
 The planning layer deliberately breaks all of those rules. Routes, beads,
 cards and the manual render after the CRT pass at full display resolution,
 with smooth curves, glow, modern type and colors no 1981 color chip could
 produce. The maze is a machine from 1981; the planning layer is you reaching
-through the glass at it. The pellets and sprites are drawn back on top, so a
-route never hides the food it crosses.
+through the glass at it.
+
+Freezing time lifts the whole board off the glass with it. Stopped, the maze
+is redrawn up in the planning layer: solid wall blocks traced from the same
+tiles, round pellets and steady energizers, on pure black with no scanlines,
+bloom or vignette, and the ghosts and the target in hi-res on top. It arrives
+on a raster split from the row you stopped time on, and the instant time runs
+again the 1981 machine is back, pixel for pixel. The pellets are drawn back
+over the routes, so a route never hides the food it crosses.
 
 `test/palette-lock.js` enforces the boundary: anything outside the CRT pass and
 the planning layer must use the fixed palette.
@@ -228,13 +244,23 @@ No framework, no install. `test/harness.js` boots `game.js` in Node behind a
 stub DOM, so the game can be exercised headlessly.
 
 ```bash
-node test/test-game.js && node test/validate-maze.js && node test/no-infinite-lanes.js && node test/palette-lock.js
+node test/test-game.js && node test/tutorial.js && node test/validate-maze.js && node test/no-infinite-lanes.js && node test/palette-lock.js
 ```
 
-- **test-game.js** — 402 checks covering the drawing rules, the wall-stop
+- **test-game.js** — 448 checks covering the drawing rules, the wall-stop
   rule, the den, energizers and the ambush, capture and scoring, lives and
   levels, touch input through real events, the frozen screen's timing and
   numbers, and a 30,000-tick soak. Takes a minute or two.
+- **tutorial.js** — 399 checks on the practice and everything around it,
+  played through real mouse and touch events: first-visit detection, the
+  full walk to the catch, the steps that refuse to go on until you've drawn,
+  every hint for a stuck player, SKIP at every step, and the tips, the
+  manual's PRACTICE button and the game-over offer that come after. It pins
+  the final scene's lesson on the real AI to the tick: one ghost never
+  catches him, two from both sides always do, and the card only offers to
+  spring the trap when it will spring. It also proves the practice never
+  draws a route for you, that none of its rules leak into a real game, and
+  that every line of its text fits a 360-pixel phone screen.
 - **validate-maze.js** — proves every board is mirror-symmetric, fully
   connected, and free of dead ends and 2×2 rooms.
 - **no-infinite-lanes.js** — walks every straight run on all three boards

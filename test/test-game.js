@@ -1756,6 +1756,350 @@ console.log('\n== touch controls ==');
        { path: h.path && h.path.tiles.map(t => t.c) });
   }
 
+  console.log('  -- the line goes into one mouth and out of the other');
+  {
+    /* A route through a tunnel used to stop at the last tile centre before
+       the seam and restart at the first one after it -- and a route whose
+       tip had only just crossed had a far side of one lone point: no line,
+       no arrowhead, nothing to pick it up by. Every seam now carries the
+       line to the edge it leaves by and starts it again at the edge it
+       comes in at. */
+    toPlay();
+    const { orderPathPoints, routeArrow, NATIVE_W, HUD_TOP, TILE } = API;
+    const Y = r => tcy(r) + HUD_TOP * TILE;            // S=1, no offset
+    const row = (cs, r) => cs.map(c => ({ c, r }));
+    const near = (a, b) => Math.abs(a - b) < 1e-9;
+
+    const right = orderPathPoints(row([25, 26, 27, 0], 14), false, 1, 0, 0);
+    ok('leaving on the right, the near run is carried to the right edge',
+       right.length === 2 && near(right[0][right[0].length - 1].x, NATIVE_W)
+       && near(right[0][right[0].length - 1].y, Y(14)), right);
+    ok('and the far run starts from the left edge, on the same row',
+       near(right[1][0].x, 0) && near(right[1][0].y, Y(14))
+       && right[1].length === 2 && near(right[1][1].x, tcx(0)), right);
+    const ra = routeArrow(right);
+    ok('a tip that has only just crossed gets its arrowhead on the far side, pointing on',
+       ra && near(ra.x, tcx(0)) && near(ra.y, Y(14)) && near(ra.ang, 0), ra);
+    ok('on a half-tile stem from the screen edge',
+       near(right[1][1].x - right[1][0].x, TILE / 2), right[1]);
+
+    const left = orderPathPoints(row([2, 1, 0, 27], 14), false, 1, 0, 0);
+    ok('leaving on the left, the near run is carried to the left edge',
+       left.length === 2 && near(left[0][left[0].length - 1].x, 0), left);
+    ok('and the far run comes in from the right edge',
+       near(left[1][0].x, NATIVE_W) && near(left[1][1].x, tcx(27)), left);
+    const la = routeArrow(left);
+    ok('with its arrowhead just inside the right mouth, pointing left',
+       la && near(la.x, tcx(27)) && near(Math.abs(la.ang), Math.PI), la);
+
+    // the whole of a long far side still reads as it always did
+    const long = orderPathPoints(row([26, 27, 0, 1, 2, 3], 14), false, 1, 0, 0);
+    ok('a longer far side just starts at the edge: the rest is tile centres',
+       long[1].map(p => p.x).join() === [0, 4, 12, 20, 28].join()
+       && near(routeArrow(long).x, tcx(3)), long[1].map(p => p.x));
+    ok('and a route that never crosses has no stub anywhere',
+       orderPathPoints(row([3, 4, 5, 6], 14), false, 1, 0, 0).length === 1
+       && orderPathPoints(row([3, 4, 5, 6], 14), false, 1, 0, 0)[0].every(p => p.x !== 0 && p.x !== NATIVE_W));
+
+    /* A patrol through the tunnel: out of the left mouth at (1,14), in at
+       the right, up col 26, back along row 11, down col 1. Its ring sits
+       on the start tile -- never on a stub -- wherever the seam falls,
+       including when the seam is the leg that closes the loop. */
+    const loop = [];
+    loop.push({ c: 1, r: 14 }, { c: 0, r: 14 }, { c: 27, r: 14 }, { c: 26, r: 14 },
+              { c: 26, r: 13 }, { c: 26, r: 12 });
+    for (let c = 26; c >= 1; c--) loop.push({ c, r: 11 });
+    loop.push({ c: 1, r: 12 }, { c: 1, r: 13 });
+    const adj = loop.every((t, i) => {
+      const n = loop[(i + 1) % loop.length];
+      const dc = Math.abs(wrapCol(n.c - t.c + 1) - 1);
+      return dc + Math.abs(n.r - t.r) === 1 && API.isOpen(t.c, t.r);
+    });
+    ok('(the test loop is a real loop on the board)', adj);
+    const lr = orderPathPoints(loop, true, 1, 0, 0);
+    const stubs = lr.flat().filter(p => p.x === 0 || p.x === NATIVE_W);
+    ok('a patrol through a tunnel gets the same two stubs',
+       lr.length === 2 && stubs.length === 2
+       && near(lr[0][lr[0].length - 1].x, 0) && near(lr[1][0].x, NATIVE_W), lr.map(r => r.length));
+    ok('and its ring still sits on the start tile',
+       near(lr[0][0].x, tcx(1)) && near(lr[0][0].y, Y(14)));
+    ok('and the loop comes back round to it',
+       near(lr[1][lr[1].length - 1].x, tcx(1)) && near(lr[1][lr[1].length - 1].y, Y(14)));
+    // same loop, started on the far side of the seam: closing it crosses
+    const rot = loop.slice(2).concat(loop.slice(0, 2));
+    const rr = orderPathPoints(rot, true, 1, 0, 0);
+    ok('when the closing leg is the one through the tunnel, the stubs are on that leg',
+       rr.length === 2 && near(rr[0][0].x, tcx(27)) && near(rr[0][rr[0].length - 1].x, 0)
+       && near(rr[1][0].x, NATIVE_W) && rr[1].length === 2 && near(rr[1][1].x, tcx(27)),
+       rr.map(r => [r[0].x, r[r.length - 1].x, r.length]));
+
+    // the coast through a tunnel goes in and out of the mouths the same way
+    const ro = API.runOutFrom(row([25, 26, 27], 14));
+    const tail = orderPathPoints([{ c: 27, r: 14 }].concat(ro), false, 1, 0, 0);
+    ok('the coast through the tunnel leaves by the right edge and comes in at the left',
+       tail.length === 2 && near(tail[0][1].x, NATIVE_W) && near(tail[1][0].x, 0)
+       && near(tail[1][tail[1].length - 1].x, tcx(ro[ro.length - 1].c)),
+       tail.map(r => r.map(p => p.x)));
+
+    // and on the glass: the far-side arrowhead, its stem, and the near stub
+    const { render, screenCtx, fx } = API;
+    game.phase = 'command';
+    game.hunters.forEach(x => { x.state = 'active'; x.path = null; x.dir = 'left';
+                                x.x = tcx(20); x.y = tcy(20); });
+    const h = game.hunters[0];
+    h.x = tcx(25); h.y = tcy(14); h.dir = null;
+    h.setOrder(row([25, 26, 27, 0], 14), false);
+    fx.enterAt = -1e6;
+    game.shakeT = 0;
+    const S = API.scale;
+    const log = [];
+    const sctx = screenCtx;
+    sctx.translate = (x, y) => log.push(['t', x, y]);
+    sctx.rotate = (a) => log.push(['r', a]);
+    sctx.moveTo = (x, y) => log.push(['m', x, y]);
+    sctx.lineTo = (x, y) => log.push(['l', x, y]);
+    render();
+    delete sctx.translate; delete sctx.rotate; delete sctx.moveTo; delete sctx.lineTo;
+    const yS = Y(14) * S;
+    const headAt = log.findIndex((e, k) => e[0] === 't' && near(e[1], tcx(0) * S) && near(e[2], yS)
+      && log[k + 1] && log[k + 1][0] === 'r' && near(log[k + 1][1], 0));
+    ok('the arrowhead is drawn just inside the far mouth, pointing the way it went',
+       headAt >= 0, log.filter(e => e[0] === 't'));
+    ok('its stem runs in from the screen edge',
+       log.some((e, k) => e[0] === 'm' && near(e[1], 0) && near(e[2], yS)
+         && log[k + 1] && log[k + 1][0] === 'l' && near(log[k + 1][1], tcx(0) * S)));
+    ok('and the near side runs out to the edge it left by',
+       log.some(e => e[0] === 'l' && near(e[1], NATIVE_W * S) && near(e[2], yS)));
+    h.path = null;
+  }
+
+  console.log('  -- and the mouse keeps going past the edge');
+  {
+    /* A mouse sails off the canvas, and the window keeps telling the game
+       where it is. Out there it used to be clamped to the one tile beyond
+       the edge -- the tile the tip lands on as it comes out of the far
+       mouth -- so once through, nothing more could be drawn. Now the
+       pointer past the edge asks for tiles further past it. */
+    const { win, input } = API;
+    const y = r => r * 8 + 4 + 24;                       // maze row -> client px
+    const down = (x, r) => fire(screen, 'mousedown', { button: 0, clientX: x, clientY: y(r) });
+    const drag = (x, r) => fire(win, 'mousemove', { button: 0, clientX: x, clientY: y(r) });
+    const up = (x, r) => fire(win, 'mouseup', { button: 0, clientX: x, clientY: y(r) });
+    const cols = () => Draw.active && Draw.active.tiles.map(t => t.c + ',' + t.r).join(' ');
+    const setup = (c, r) => {
+      toPlay();
+      game.phase = 'command';
+      game.hunters.forEach(x => { x.state = 'active'; x.path = null; x.dir = 'left';
+                                  x.x = tcx(20); x.y = tcy(20); });
+      const h = game.hunters[0];
+      h.x = tcx(c); h.y = tcy(r); h.dir = null;
+      Draw.select(0);
+      return h;
+    };
+
+    const h = setup(24, 14);
+    down(24 * 8 + 4, 14);
+    drag(26 * 8 + 4, 14);                                 // declare the drag
+    drag(224 + 2, 14);                                    // just off the right edge
+    ok('just off the edge, the tip comes out of the far mouth',
+       cols() === '24,14 25,14 26,14 27,14 0,14', cols());
+    drag(224 + 3 * 8 + 2, 14);                            // three tiles further out
+    ok('and carried on past it, the route keeps going along the far side',
+       cols() === '24,14 25,14 26,14 27,14 0,14 1,14 2,14 3,14', cols());
+    drag(224 + 1 * 8 + 4, 11);                            // out there, up and back a bit
+    ok('moving up out there turns it up the far side\'s corridor, one legal step at a time',
+       cols() === '24,14 25,14 26,14 27,14 0,14 1,14 1,13 1,12 1,11', cols());
+    drag(26 * 8 + 4, 14);                                 // back over the board
+    ok('and dragging back over the board takes it back through the tunnel',
+       cols() === '24,14 25,14 26,14', cols());
+    drag(224 + 2 * 8 + 4, 14);
+    up(224 + 2 * 8 + 4, 14);                              // let go out there
+    ok('released off the glass, the order is what was drawn',
+       h.path && h.path.tiles.map(t => t.c).join() === '24,25,26,27,0,1,2',
+       h.path && h.path.tiles.map(t => t.c));
+    ok('and the release still ends the gesture', !input.leftDown && !Draw.active);
+
+    // the left mouth, mirrored
+    setup(3, 14);
+    down(3 * 8 + 4, 14);
+    drag(1 * 8 + 4, 14);
+    drag(-2, 14);
+    ok('off the left edge, out of the right mouth', cols() === '3,14 2,14 1,14 0,14 27,14', cols());
+    drag(-(2 * 8) - 2, 14);                               // a tile and a bit further
+    ok('and on along the far side', cols() === '3,14 2,14 1,14 0,14 27,14 26,14 25,14', cols());
+    drag(-(1 * 8) - 4, 11);
+    ok('and up its corridor', cols() === '3,14 2,14 1,14 0,14 27,14 26,14 26,13 26,12 26,11', cols());
+    drag(1 * 8 + 4, 14);
+    ok('and back', cols() === '3,14 2,14 1,14', cols());
+    up(1 * 8 + 4, 14);
+
+    /* A fast flick: the pointer gets a long way past the right edge before
+       the tip has reached the mouth. It is ahead of the tip, not behind it,
+       and the shorter way round to its column would have turned back. */
+    setup(24, 14);
+    down(24 * 8 + 4, 14);
+    drag(26 * 8 + 4, 14);
+    drag(224 + 12 * 8, 14);
+    ok('a flick well past the edge still goes out through the mouth it was heading for',
+       Draw.active.tiles.some(t => t.c === 0) && Draw.active.tiles.every(t => t.c >= 24 || t.c <= 6),
+       cols());
+    up(224 + 12 * 8, 14);
+
+    /* A long way out. A big window leaves twenty-odd tiles of margin
+       beside the canvas, and the window keeps reporting the pointer out
+       there. Once the tip is through, it stops at the pointer's column on
+       the far side, wherever on the far side that is: it used to read the
+       tip's half of the board as which lap the pointer was on, so a tip
+       that walked on past the middle took the pointer for a whole lap
+       ahead, ran the length of the board after it and went through the
+       tunnel again. */
+    const crossings = () => {
+      const t = Draw.active.tiles;
+      let n = 0;
+      for (let i = 1; i < t.length; i++) if (Math.abs(t[i].c - t[i - 1].c) > 1) n++;
+      return n;
+    };
+    for (const k of [14, 15, 18, 20, 26, 40]) {
+      for (const [dir, start, toward] of [[1, 24, 26], [-1, 3, 1]]) {
+        setup(start, 14);
+        down(start * 8 + 4, 14);
+        drag(toward * 8 + 4, 14);
+        const sweep = [];
+        for (let j = 0; j <= k; j++) sweep.push(dir > 0 ? 224 + j * 8 + 2 : -(j * 8) - 2);
+        for (const x of sweep) drag(x, 14);
+        const x = sweep[sweep.length - 1];
+        // the far-side column the pointer is over, and how far in that is
+        const kk = Math.min(k, COLS - 1);
+        const far = dir > 0 ? kk : COLS - 1 - kk;
+        const bad = [];
+        for (const r of [8, 11, 17, 20, 14, 11, 8, 14]) {
+          drag(x, r);
+          const tip = Draw.active.tiles[Draw.active.tiles.length - 1];
+          const past = dir > 0 ? tip.c > far : tip.c < far;
+          if (crossings() !== 1 || past) bad.push({ r, tip, n: crossings(), len: Draw.active.tiles.length });
+        }
+        ok('carried ' + k + ' tiles past the ' + (dir > 0 ? 'right' : 'left')
+           + ' edge and up and down out there, the tip never runs past the pointer or laps the board',
+           bad.length === 0, bad);
+        up(x, 14);
+      }
+    }
+    {
+      /* The reported case, exactly: out to (6,14), up to row 11 -- it stops
+         under the pointer, at col 15, not eleven columns beyond it. Back
+         down to row 14 there is no way down from (15,11), so the tip waits
+         where it is: it does not go looking for one round the board. */
+      setup(24, 14);
+      down(24 * 8 + 4, 14);
+      drag(26 * 8 + 4, 14);
+      for (let j = 0; j <= 15; j++) drag(224 + j * 8 + 2, 14);
+      const at14 = Draw.active.tiles[Draw.active.tiles.length - 1];
+      drag(224 + 15 * 8 + 2, 11);
+      const at11 = Draw.active.tiles[Draw.active.tiles.length - 1];
+      drag(224 + 15 * 8 + 2, 14);
+      const back = Draw.active.tiles[Draw.active.tiles.length - 1];
+      ok('15 past the edge, up to row 11 stops under the pointer, and back down does not lap',
+         at14.c === 6 && at11.c === 15 && at11.r === 11 && crossings() === 1
+           && back.c === at11.c && back.r === at11.r,
+         { at14, at11, back, route: cols() });
+      up(224 + 15 * 8 + 2, 14);
+    }
+    {
+      /* Through the right mouth, then the pointer goes off the LEFT edge:
+         that is back the way the route came, so the tip goes back through
+         the tunnel and stops on the near side -- it does not set off
+         across the board in search of a lap to the left. */
+      setup(24, 14);
+      down(24 * 8 + 4, 14);
+      drag(26 * 8 + 4, 14);
+      for (let j = 0; j <= 3; j++) drag(224 + j * 8 + 2, 14);
+      drag(-(2 * 8) - 2, 14);
+      ok('out of the right mouth, a pointer past the left edge takes it back through',
+         crossings() === 0 && Draw.active.tiles.every(t => t.c >= 24), cols());
+      up(-(2 * 8) - 2, 14);
+    }
+
+    // off a tunnel row, past the edge is past a wall: nothing moves
+    for (const [c, toward, past] of [[3, 1, -20], [24, 26, 224 + 20]]) {
+      setup(c, 1);
+      down(c * 8 + 4, 1);
+      drag(toward * 8 + 4, 1);
+      const before = cols();
+      drag(past, 1);
+      drag(past + Math.sign(past) * 40, 1);
+      ok('off a tunnel row, the pointer past the ' + (past < 0 ? 'left' : 'right')
+         + ' edge does nothing', cols() === before, { before, after: cols() });
+      up(past, 1);
+    }
+  }
+
+  console.log('  -- let go, and pick it up again on the far side');
+  {
+    /* Lift (or let go of the mouse) with the tip just through, and the
+       arrowhead on the far side is a handle like any other: grab it and
+       the route goes on from there. On a phone this is the way to keep
+       going -- a finger cannot pass the glass. */
+    const { win, setTouchMode } = API;
+    const Y = r => r * 8 + 4 + 24;
+    const park = () => {
+      toPlay();
+      game.phase = 'command';
+      game.hunters.forEach(x => { x.state = 'active'; x.path = null; x.dir = 'left';
+                                  x.x = tcx(20); x.y = tcy(20); });
+      const h = game.hunters[0];
+      h.x = tcx(24); h.y = tcy(14); h.dir = null;
+      Draw.select(0);
+      return h;
+    };
+
+    // the mouse
+    let h = park();
+    fire(screen, 'mousedown', { button: 0, clientX: 24 * 8 + 4, clientY: Y(14) });
+    fire(win, 'mousemove', { clientX: 26 * 8 + 4, clientY: Y(14) });
+    fire(win, 'mousemove', { clientX: 224 + 2, clientY: Y(14) });
+    fire(win, 'mouseup', { button: 0, clientX: 224 + 2, clientY: Y(14) });
+    ok('(mouse) the order ends just through the tunnel',
+       h.path && h.path.tiles[h.path.tiles.length - 1].c === 0, h.path && h.path.tiles);
+    ok('(mouse) its arrowhead is a handle', Draw.tipAt(game, tcx(0), tcy(14)) === h);
+    fire(screen, 'mousedown', { button: 0, clientX: tcx(0) + 1, clientY: Y(14) });
+    ok('(mouse) pressing it picks the route up where it left off',
+       Draw.active && Draw.active.hunter === h
+       && Draw.active.tiles[Draw.active.tiles.length - 1].c === 0
+       && game.phase === 'command');
+    fire(win, 'mousemove', { clientX: 4 * 8 + 4, clientY: Y(14) });
+    fire(win, 'mouseup', { button: 0, clientX: 4 * 8 + 4, clientY: Y(14) });
+    ok('(mouse) and goes on along the far side',
+       h.path && h.path.tiles.map(t => t.c).join() === '24,25,26,27,0,1,2,3,4',
+       h.path && h.path.tiles.map(t => t.c));
+
+    // a finger
+    h = park();
+    const { touch, touchEvent } = API;
+    const tstart = t => fire(screen, 'touchstart', touchEvent('touchstart', [t], [t]));
+    const tmove = t => fire(screen, 'touchmove', touchEvent('touchmove', [t], [t]));
+    const tend = t => fire(screen, 'touchend', touchEvent('touchend', [], [t]));
+    tstart(touch(7, 24 * 8 + 4, Y(14)));
+    tmove(touch(7, 26 * 8 + 4, Y(14)));
+    tmove(touch(7, 224 - 2, Y(14)));                     // pressed against the edge
+    tend(touch(7, 224 - 2, Y(14)));
+    ok('(touch) the order ends just through the tunnel',
+       h.path && h.path.tiles[h.path.tiles.length - 1].c === 0, h.path && h.path.tiles);
+    ok('(touch) its arrowhead is a handle, with a fingertip\'s reach',
+       Draw.tipAt(game, tcx(0) + 10, tcy(14)) === h);
+    tstart(touch(8, tcx(0) + 6, Y(14)));
+    ok('(touch) landing on it picks the route up',
+       Draw.active && Draw.active.hunter === h && game.phase === 'command');
+    tmove(touch(8, 4 * 8 + 4, Y(14)));
+    tend(touch(8, 4 * 8 + 4, Y(14)));
+    ok('(touch) and goes on along the far side',
+       h.path && h.path.tiles.map(t => t.c).join() === '24,25,26,27,0,1,2,3,4',
+       h.path && h.path.tiles.map(t => t.c));
+    setTouchMode(false);
+
+    ok('and what counts as a tap or a drag has not moved',
+       API.TAP_SLOP === 6 && API.TAP_SLOP_TOUCH === 12 && API.TAP_MS === 250 && API.TAP_TRAVEL === 24);
+  }
+
   console.log('  -- but a real stroke still commands');
   {
     toPlay();
@@ -1959,11 +2303,11 @@ console.log('\n== the presentation clock ==');
   ok('the glass renders mid-entrance without throwing', threw === null, { threw });
 }
 
-console.log('\n== the bank swap arrives as a raster split ==');
+console.log('\n== the frozen board arrives as a raster split ==');
 {
-  /* The night bank opens as a band from the row that stopped time, in whole
-     tile rows, and the thaw snaps. Read through the same helper every
-     bank-dependent draw uses, so walls and pellets cannot disagree. */
+  /* The lifted board opens as a band from the row that stopped time, in
+     whole tile rows, and the thaw snaps. Read through the same helper every
+     split-dependent draw uses, so walls and pellets cannot disagree. */
   const { pauseToCommand, resumeFromCommand, fx, bankBand, splitBank, SPLIT_TICKS } = API;
   toPlay();
   game.phase = 'play';
@@ -1984,22 +2328,35 @@ console.log('\n== the bank swap arrives as a raster split ==');
   }
   ok('it only ever opens, in whole tile rows', grows && whole);
   fx.enterAt = API.uiClock - SPLIT_TICKS;
-  ok('and within six ticks the whole board is in the night bank', bankBand() === null);
+  ok('and within six ticks the whole board is lifted', bankBand() === null);
 
   const calls = (g) => { const seen = []; splitBank(g, dim => seen.push(dim)); return seen; };
   let clipped = 0;
   const g = { save() {}, restore() {}, beginPath() {}, rect() {}, clip() { clipped++; } };
-  ok('a finished split paints the night bank alone',
+  ok('a finished split paints the frozen side alone',
      JSON.stringify(calls(g)) === '[true]' && clipped === 0);
   fx.enterAt = API.uiClock;
-  ok('mid-split it paints the live bank, then the night bank under one clip',
-     JSON.stringify(calls(g)) === '[false,true]' && clipped === 1);
+  ok('mid-split it paints the live rows, then the band, each under its own clip',
+     JSON.stringify(calls(g)) === '[false,true]' && clipped === 2);
+  {
+    /* ...and the live rows' clip leaves the band out: a live pellet
+       painted inside it would sit on top of the lifted board's round one */
+    const rects = [];
+    const r = { save() {}, restore() {}, beginPath() { rects.push([]); }, clip() {},
+      rect(x, y, w, h) { rects[rects.length - 1].push([y, y + h]); } };
+    splitBank(r, () => {});
+    const band = bankBand(), y0 = (band.lo + 3) * 8, y1 = (band.hi + 3) * 8;
+    const live = rects[0], frozen = rects[1];
+    ok('the live rows stop at the band and start again under it',
+       live.length === 2 && live[0][1] === y0 && live[1][0] === y1
+       && frozen.length === 1 && frozen[0][0] === y0 && frozen[0][1] === y1, { live, frozen, y0, y1 });
+  }
 
   fx.skipEnter = true;
   ok('a quick refreeze skips the split', bankBand() === null);
   fx.skipEnter = false;
   resumeFromCommand();
-  ok('the thaw snaps straight back to the live bank',
+  ok('the thaw snaps straight back to the pixels',
      game.phase === 'play' && JSON.stringify(calls(g)) === '[false]');
   game.phase = 'capture';
   ok('and no split can leak into the capture', bankBand() === null);
@@ -2433,7 +2790,7 @@ console.log('\n== the squad cards and the status pill ==');
 
 console.log('\n== the freeze wave, the casing and the shadows ==');
 {
-  const { fx, pauseToCommand, render, surveyWave, WAVE_TICKS, WAVE_FLARE, TOKENS, SHADOW,
+  const { fx, pauseToCommand, render, freezeWave, WAVE_TICKS, TOKENS, SHADOW,
           SHADOW_DROP, SHADOW_LIFT, routeOrder, hotBeadsNow, Draw } = API;
   const S = () => API.scale;
   const sctx = API.screenCtx;
@@ -2450,24 +2807,13 @@ console.log('\n== the freeze wave, the casing and the shadows ==');
   fx.skipEnter = false;
   const at = (t) => { fx.enterAt = API.uiClock - t; };
 
-  // the wave, three ticks out: a front, a wake, and ground not yet covered
+  // the wave, three ticks out: a front partway across the glass
   at(3);
-  let wv = surveyWave(S(), 0, 0);
-  const cross = [];
-  for (let j = 0; j < wv.bands.length; j++) {
-    cross.push({ band: wv.bands[j], d: Math.hypot(wv.pts[2 * j] - wv.cx, wv.pts[2 * j + 1] - wv.cy) });
-  }
-  const ahead = cross.filter(x => x.band < 0), laid = cross.filter(x => x.band >= 0);
+  let wv = freezeWave(S(), 0, 0);
   ok('the wave starts where time stopped',
      wv.cx === origin.x * S() && wv.cy === (origin.y + 3 * 8) * S(), { cx: wv.cx, cy: wv.cy });
-  ok('it uncovers the grid from there outward',
-     ahead.length > 0 && laid.length > 0 && ahead.every(x => x.d > wv.R) && laid.every(x => x.d <= wv.R),
-     { ahead: ahead.length, laid: laid.length });
-  const lit = laid.filter(x => x.band > 0).sort((a, b) => a.d - b.d);
-  ok('the crosses flare as the front passes, freshest furthest out',
-     lit.length > 0 && lit.every((x, k) => k === 0 || x.band <= lit[k - 1].band));
-  ok('and the whole grid is at most four strokes',
-     new Set(laid.map(x => x.band)).size <= 4 && Math.max(...laid.map(x => x.band)) <= 3);
+  ok('and runs out from there, still short of the far corner',
+     wv.moving && wv.R > 0 && wv.R < wv.far, { R: wv.R, far: wv.far });
 
   // the ring: one soft gradient at the origin, never brighter than 0.35
   const fills = [];
@@ -2480,17 +2826,18 @@ console.log('\n== the freeze wave, the casing and the shadows ==');
   ok('one soft ring rides the front, never above 0.35',
      mid.length === 1 && mid[0].alpha > 0 && mid[0].alpha <= 0.35, { n: mid.length, a: mid[0] && mid[0].alpha });
 
-  at(WAVE_TICKS + WAVE_FLARE);
-  wv = surveyWave(S(), 0, 0);
+  at(WAVE_TICKS);
+  wv = freezeWave(S(), 0, 0);
   fills.length = 0;
   render();
-  ok('once it has passed, the grid is the plain grid and the ring is gone',
-     !wv.moving && wv.bands.every(b => b === 0) && ringFills().length === 0);
+  ok('once it has crossed the glass, the ring is gone',
+     !wv.moving && ringFills().length === 0);
   at(2);
   fx.skipEnter = true;
-  wv = surveyWave(S(), 0, 0);
-  ok('a quick refreeze lays the grid at once, with no wave',
-     !wv.moving && wv.bands.every(b => b === 0));
+  wv = freezeWave(S(), 0, 0);
+  fills.length = 0;
+  render();
+  ok('a quick refreeze has no wave', !wv.moving && ringFills().length === 0);
   fx.skipEnter = false;
 
   // the casing: stacked routes, the selected one on top, marks after all edges
@@ -3029,13 +3376,447 @@ console.log('\n== time stops where it was asked to ==');
   ok('only a real resume stamps a thaw: a new round from READY does not', fx.thawAt === -1e9);
 }
 
+console.log('\n== frozen, the board lifts off the glass ==');
+{
+  /* Stopped, the walls, pellets and energizers are redrawn on the glass as
+     solid blocks and round discs on pure black; running, the board is the
+     1981 one, untouched. These hold both halves of that, and the geometry
+     the blocks are traced from. */
+  const { fx, pauseToCommand, resumeFromCommand, render, frozenWallLoops, frozenWallPath,
+          frozenBake, frozenCache, drawFrozenMarks, setBoard, BOARDS, isOpen,
+          DOOR_ROW, DOOR_C0, DOOR_C1, FB_INSET, PAL, win, fire } = API;
+  const isDoor = (c, r) => r === DOOR_ROW && (c === DOOR_C0 || c === DOOR_C1);
+  const S = () => API.scale;
+  const TILE = 8, HUD = 3 * TILE, MAZE_H = API.MAZE_ROWS * TILE;
+  const solid = (c, r) => c >= 0 && c < COLS && r >= 0 && r < API.MAZE_ROWS
+    && !isOpen(c, r) && !isDoor(c, r);
+  const sign = v => (v > 0) - (v < 0);
+
+  // ---- the geometry: every board, traced into closed, axis-aligned loops ----
+  /* Every real board's frame is cut by its tunnels, so none of them
+     encloses any open ground and every loop is a block. A fourth board,
+     the opener with its tunnel bricked up, makes the frame a ring: the
+     corridors inside it are a hole, and must wind the other way. */
+  const real = BOARDS.length;
+  BOARDS.push({ src: BOARDS[0].src.map(row => row[0] === ' ' ? '#' + row.slice(1, -1) + '#' : row),
+    tunnels: [], wall: BOARDS[0].wall });
+  for (let i = 0; i < BOARDS.length; i++) {
+    setBoard(i);
+    const loops = frozenWallLoops();
+    let closed = true, square = true, turns = true;
+    const bad = [];
+    for (const L of loops) {
+      for (let k = 0; k < L.length; k++) {
+        const a = L[k], b = L[(k + 1) % L.length];
+        const dx = sign(b.x - a.x), dy = sign(b.y - a.y);
+        if ((dx !== 0) === (dy !== 0)) { square = false; bad.push([a, b]); }
+        // the run from one corner to the next leaves the first one the way
+        // it said it would, and arrives at the next the way that one says
+        if (dx !== a.outX || dy !== a.outY || dx !== b.inX || dy !== b.inY) closed = false;
+        if (a.inX * a.outX + a.inY * a.outY !== 0) turns = false;
+      }
+    }
+    ok('board ' + (i + 1) + ': the walls trace into ' + loops.length + ' closed loops',
+       loops.length > 10 && closed, bad.slice(0, 2));
+    ok('board ' + (i + 1) + ': every edge is axis-aligned before rounding, and every corner a real turn',
+       square && turns);
+    /* Winding: round each loop, solid on the right. Summed at every tile's
+       middle, it is 1 on a wall and 0 on open floor -- so the blocks wind
+       one way and anything open a block encloses the other, and a nonzero
+       fill leaves the corridors, the den and the door open. */
+    const wind = (px, py) => {
+      let w = 0;
+      for (const L of loops) {
+        for (let k = 0; k < L.length; k++) {
+          const a = L[k], b = L[(k + 1) % L.length];
+          if (a.x !== b.x || px >= a.x) continue;   // vertical edges to the right of the point
+          if (a.y <= py && b.y > py) w += 1;        // heading down the glass
+          else if (b.y <= py && a.y > py) w -= 1;   // heading up it
+        }
+      }
+      return w;
+    };
+    const wrong = [];
+    for (let r = 0; r < API.MAZE_ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (wind(c + 0.5, r + 0.5) !== (solid(c, r) ? 1 : 0)) wrong.push({ c, r });
+      }
+    }
+    const area = L => L.reduce((s, a, k) => {
+      const b = L[(k + 1) % L.length];
+      return s + a.x * b.y - b.x * a.y;
+    }, 0);
+    const outlines = loops.filter(L => area(L) > 0).length, holes = loops.length - outlines;
+    ok('board ' + (i + 1) + ': they wind right -- walls filled, every open tile left open (' +
+       outlines + ' blocks, ' + holes + ' holes)',
+       wrong.length === 0 && outlines > 0 && (i < real || holes > 0), wrong.slice(0, 4));
+
+    // the rounded path: one figure per loop, each corner stood back into its block
+    const path = frozenWallPath();
+    const arcs = path.ops.filter(o => o[0] === 'arcTo');
+    const shut = path.ops.filter(o => o[0] === 'closePath').length;
+    const inside = arcs.every(o => solid(Math.floor(o[1] / TILE), Math.floor(o[2] / TILE)));
+    const offGrid = arcs.every(o => Math.abs(o[1] / TILE - Math.round(o[1] / TILE)) * TILE === FB_INSET
+      && Math.abs(o[2] / TILE - Math.round(o[2] / TILE)) * TILE === FB_INSET);
+    ok('board ' + (i + 1) + ': the rounded path closes every loop, each corner set back inside its block',
+       shut === loops.length && arcs.length === loops.reduce((n, L) => n + L.length, 0) && inside && offGrid);
+  }
+  BOARDS.pop();
+  setBoard(0);
+
+  // ---- the bake: per board and per scale, and never per frame ----
+  const a = frozenBake().walls;
+  ok('the walls are baked once and kept', frozenBake().walls === a && frozenCache.key === '0|' + S());
+  ok('...a canvas the size of the maze on the glass',
+     a.width === 224 * S() && a.height === MAZE_H * S(), { w: a.width, h: a.height });
+  setBoard(1);
+  ok('a new board empties it', frozenCache.key === null);
+  const b = frozenBake().walls;
+  ok('...and the next frozen frame bakes that board', b !== a && frozenCache.key === '1|' + S());
+  setBoard(0);
+  frozenBake();
+  const was = S();
+  win.innerWidth = 1800; win.innerHeight = 2000;
+  fire(win, 'resize', {});
+  ok('a new scale empties it too', S() !== was && frozenCache.key === null, { was, now: S() });
+  const c = frozenBake().walls;
+  ok('...and it comes back at the new size', c.width === 224 * S() && frozenCache.key === '0|' + S());
+  win.innerWidth = 900; win.innerHeight = 1000;
+  fire(win, 'resize', {});
+  ok('the harness glass is itself again', S() === was && frozenCache.key === null);
+
+  // ---- where it draws: frozen time, and nowhere else ----
+  toPlay();
+  game.hunters.forEach(x => { x.state = 'active'; x.overdue = false; x.dir = 'left'; x.path = null; });
+  const blitsOfWalls = (phase, setup) => {
+    const sctx = API.screenCtx;
+    const seen = [];
+    sctx.drawImage = (img) => { seen.push(img); };
+    if (setup) setup();
+    game.phase = phase;
+    render();
+    sctx.drawImage = () => {};
+    return seen.filter(img => img === frozenCache.walls).length;
+  };
+  fx.skipEnter = true;
+  ok('frozen, the lifted board is drawn, once', blitsOfWalls('command') === 1);
+  const elsewhere = {
+    play: blitsOfWalls('play'),
+    ready: blitsOfWalls('ready'),
+    capture: blitsOfWalls('capture', () => { game.phaseT = 10; }),
+    flash: blitsOfWalls('flash', () => { game.flashT = 0; }),
+    gameover: blitsOfWalls('gameover'),
+  };
+  API.startDemo();
+  elsewhere.attract = blitsOfWalls('attract');
+  ok('and never in play, the attract demo, READY, the catch, the flash or GAME OVER',
+     Object.values(elsewhere).every(n => n === 0), elsewhere);
+  fx.skipEnter = false;
+
+  // ---- the entrance: the lifted board opens with the raster split ----
+  {
+    /* Mid-split, the black field, the walls and the round food are clipped
+       to the band the split has reached, in the same whole tile rows the
+       framebuffer leaves out, so the live pixel rows either side of it are
+       not buried. A skipped entrance -- a quick refreeze, reduced motion --
+       snaps: the clip is the whole maze on the first frame. */
+    const { drawFrozenBoard, drawFrozenDots, bankBand, reducedMotionMQ: mq } = API;
+    const clipOf = (draw) => {
+      const log = [];
+      let rects = [], clip = null;
+      const ctx = new Proxy({ canvas: { width: 224, height: 288 } }, {
+        get(t, k) {
+          if (k in t) return t[k];
+          if (k === 'beginPath') return () => { rects = []; };
+          if (k === 'rect') return (x, y, w, h) => { rects.push({ x, y, w, h }); };
+          if (k === 'clip') return () => { if (!clip) clip = rects.slice(); };
+          return (...args) => { log.push([k, clip !== null]); };
+        },
+        set(t, k, v) { t[k] = v; return true; },
+      });
+      draw(ctx, 0, 0);
+      return { clip, drewOnlyClipped: log.filter(o => o[0] === 'fillRect' || o[0] === 'drawImage' || o[0] === 'fill')
+        .every(o => o[1]), log };
+    };
+    const rows = (lo, hi) => ({ y: (lo + 3) * TILE * S(), h: (hi - lo) * TILE * S() });
+    const fits = (c, want) => c && c.length === 1 && near2(c[0].y, want.y) && near2(c[0].h, want.h)
+      && c[0].x <= 0 && c[0].x + c[0].w >= 224 * S();
+    const near2 = (a, b) => Math.abs(a - b) < 1e-6;
+    toPlay();
+    game.phase = 'play';
+    game.hunters.forEach(x => { x.overdue = false; });
+    fx.thawAt = -1e9;
+    fx.skipEnter = false;
+    pauseToCommand({ x: tcx(5), y: tcy(10) });
+    fx.enterAt = API.uiClock;
+    const band = bankBand();
+    const midBoard = clipOf(drawFrozenBoard), midDots = clipOf(drawFrozenDots);
+    ok('mid-split, the black and the walls are clipped to the band the split has reached',
+       band && fits(midBoard.clip, rows(band.lo, band.hi)) && midBoard.drewOnlyClipped,
+       { band, clip: midBoard.clip });
+    ok('...and so is the round food, on the same rows', fits(midDots.clip, rows(band.lo, band.hi))
+       && midDots.drewOnlyClipped, { clip: midDots.clip });
+    fx.enterAt = API.uiClock - 3;
+    const wider = bankBand(), later = clipOf(drawFrozenBoard);
+    ok('...and the clip opens with it', wider && wider.hi - wider.lo > band.hi - band.lo
+       && fits(later.clip, rows(wider.lo, wider.hi)), { wider, clip: later.clip });
+    const whole = rows(0, API.MAZE_ROWS);
+    fx.enterAt = API.uiClock;
+    fx.skipEnter = true;
+    ok('a skipped entrance lifts the whole maze at once', bankBand() === null
+       && fits(clipOf(drawFrozenBoard).clip, whole) && fits(clipOf(drawFrozenDots).clip, whole));
+    fx.skipEnter = false;
+    mq.matches = true;
+    ok('...and so does reduced motion', bankBand() === null
+       && fits(clipOf(drawFrozenBoard).clip, whole) && fits(clipOf(drawFrozenDots).clip, whole));
+    mq.matches = false;
+    resumeFromCommand();
+    ok('thawed, neither draws anything at all', clipOf(drawFrozenBoard).clip === null
+       && clipOf(drawFrozenDots).clip === null);
+  }
+
+  // ---- the food leaves room for an arrowhead ----
+  {
+    /* Every pellet's black collar is wider than an arrowhead is deep, so a
+       route whose tip stopped on a pellet -- dragged on along the far side
+       of a tunnel, say -- had its head cut down to a sliver: nothing to
+       read and nothing to grab. The tip's pellet keeps its disc and loses
+       its collar; every other pellet, on the route or off it, keeps both. */
+    const { drawFrozenDots, routeOrder } = API;
+    const fills = () => {
+      const out = [];
+      const ctx = new Proxy({ canvas: { width: 224, height: 288 } }, {
+        get(t, k) {
+          if (k in t) return t[k];
+          if (k === 'fill') return (path) => { out.push({ style: t.fillStyle, path }); };
+          return () => {};
+        },
+        set(t, k, v) { t[k] = v; return true; },
+      });
+      const tips = drawFrozenDots(ctx, 0, 0);
+      const disc = (style) => {
+        const f = out.find(o => o.style === style && o.path);
+        return f ? f.path.ops.filter(op => op[0] === 'arc') : [];
+      };
+      return { tips, collars: disc(API.PAL.black), pellets: disc(API.PAL.dot) };
+    };
+    const at = (arcs, c, r) => arcs.some(a => Math.abs(a[1] - tcx(c) * S()) < 1e-6
+      && Math.abs(a[2] - (tcy(r) + API.HUD_TOP * API.TILE) * S()) < 1e-6);
+    toPlay();
+    pauseToCommand({ x: tcx(5), y: tcy(10) });
+    fx.skipEnter = true;
+    game.hunters.forEach(x => { x.path = null; });
+    const h = game.hunters[0];
+    h.state = 'active'; h.x = tcx(25); h.y = tcy(14); h.dir = 'right';
+    // out of the right mouth, in at the left, and on along the far corridor
+    const route = [25, 26, 27, 0, 1, 2, 3].map(c => ({ c, r: 14 }));
+    ok('(the far side of the tunnel row has pellets on it)',
+       API.dots[14][1] === 1 && API.dots[14][3] === 1 && API.dots[14][4] === 1);
+    h.setOrder(route, false);
+    const o = routeOrder(S(), 0, 0).find(x => x.h === h);
+    ok('(the route carries an arrowhead at its tip)', o && API.routeArrow(o.runs)
+       && Math.abs(API.routeArrow(o.runs).x - tcx(3) * S()) < 1e-6);
+    let f = fills();
+    ok('a tip on a pellet gets no collar', !at(f.collars, 3, 14) && f.tips.has(14 * COLS + 3),
+       { tips: [...f.tips] });
+    ok('but keeps its pellet: an order still never hides the food', at(f.pellets, 3, 14));
+    ok('and the pellets it ran across, and the ones past it, keep their collars',
+       at(f.collars, 1, 14) && at(f.collars, 2, 14) && at(f.collars, 4, 14));
+    // the route in hand gets the same room, wherever the drag has got to
+    h.path = null;
+    Draw.active = { hunter: h, tiles: route.slice(0, 6), closable: false, home: false };
+    f = fills();
+    ok('so does the tip of the route being dragged', !at(f.collars, 2, 14) && at(f.collars, 3, 14)
+       && at(f.pellets, 2, 14));
+    Draw.active = null;
+    // a patrol has a ring, not an arrowhead: its pellets all keep their collars
+    h.setOrder([{ c: 1, r: 14 }, { c: 2, r: 14 }, { c: 3, r: 14 }, { c: 2, r: 14 }], true);
+    f = fills();
+    ok('a patrol has no arrowhead to make room for', f.tips.size === 0 && at(f.collars, 2, 14));
+    h.path = null;
+    fx.skipEnter = false;
+    resumeFromCommand();
+  }
+
+  // ---- the framebuffer: live frames are exactly what they were ----
+  const recorder = () => {
+    const log = [];
+    const ctx = new Proxy({ canvas: { width: 224, height: 288 } }, {
+      get(t, k) {
+        if (k in t) return t[k];
+        return (...args) => { log.push([k, ...args.map(v => (v && typeof v === 'object') ? (v.width + 'x' + v.height) : v)]); };
+      },
+      set(t, k, v) { log.push(['set', k, v]); t[k] = v; return true; },
+    });
+    return { ctx, log };
+  };
+  const realNative = API.nativeCtx;
+  const nativeFrame = () => {
+    const rec = recorder();
+    API.setNativeCtx(rec.ctx);
+    try { render(); } finally { API.setNativeCtx(realNative); }
+    return rec.log;
+  };
+  toPlay();
+  game.phase = 'play';
+  game.popups = [];
+  game.hint = false;   // the freeze below would close GRAB A GHOST's window
+  game.hunters.forEach(x => { x.state = 'active'; x.overdue = false; x.dir = 'left'; x.path = null; });
+  const before = nativeFrame();
+  const pellets = API.dots.flat().filter(d => d === 1).length;
+  const mazeBlit = before.filter(o => o[0] === 'drawImage' && o[1] === '224x' + MAZE_H && o[2] === 0 && o[3] === HUD);
+  const pelletRects = before.filter(o => o[0] === 'fillRect' && o[3] === 2 && o[4] === 2);
+  ok('a live frame lays the whole pixel maze and every pellet into the framebuffer, unclipped',
+     mazeBlit.length === 1 && pelletRects.length === pellets && !before.some(o => o[0] === 'clip'),
+     { maze: mazeBlit.length, rects: pelletRects.length, pellets });
+  pauseToCommand({ x: tcx(5), y: tcy(10) });
+  nativeFrame();
+  fx.enterAt = API.uiClock - 100;
+  nativeFrame();
+  frozenBake();
+  resumeFromCommand();
+  game.phase = 'play';
+  const after = nativeFrame();
+  ok('and after a freeze and a thaw, the live framebuffer is draw-for-draw the same',
+     game.phase === 'play' && JSON.stringify(after) === JSON.stringify(before),
+     { before: before.length, after: after.length });
+
+  // ---- frozen, the framebuffer leaves the maze to the glass ----
+  game.fruit = null;
+  game.popups = [];
+  const g0 = game.hunters[0];
+  g0.state = 'active'; g0.path = null; g0.dir = null; g0.x = tcx(6); g0.y = tcy(5);
+  Draw.selected = 0;
+  Draw.active = null;
+  pauseToCommand({ x: g0.x, y: g0.y });
+  fx.enterAt = API.uiClock - 100;
+  // wait for the blink to be on, the way a frame would find it
+  let ts = 2e9, guard = 0;
+  while ((API.uiFrame / 20 | 0) % 2 !== 0 && guard++ < 60) { ts += 1000 / 60; API.frame(ts); }
+  if (game.phase !== 'command') { game.phase = 'command'; fx.enterAt = API.uiClock - 100; }
+  const frozen = nativeFrame();
+  const clear = o => o[0] === 'fillRect' && o[1] === 0 && o[2] === 0 && o[3] === 224 && o[4] === 288;
+  const inMaze = frozen.filter(o => !clear(o) && (o[0] === 'fillRect' || o[0] === 'drawImage')
+    && (o[0] === 'fillRect' ? o[2] + o[4] > HUD && o[2] < HUD + MAZE_H : o[3] + 8 > HUD && o[3] < HUD + MAZE_H));
+  ok("frozen, nothing of the board is left in the framebuffer: no walls, pellets, brackets or '!'",
+     inMaze.length === 0, inMaze.slice(0, 6));
+  const marks = drawFrozenMarks(API.screenCtx, 0, 0);
+  ok("...the brackets and the '!' are on the glass instead, on the ghost",
+     marks && marks.brackets && marks.alerts.length === 1
+     && marks.brackets.x === g0.x * S() && marks.alerts[0].y === (g0.y + HUD) * S(), marks);
+  // the ghost's own ORDERS? popup lands where the '!' goes; the words win
+  game.popups = [{ x: g0.x, y: g0.y - 10, text: g0.def.name + ': ORDERS?', color: g0.color, t: 90 }];
+  const worded = drawFrozenMarks(API.screenCtx, 0, 0);
+  ok("...but no '!' stamped into the ghost's own ORDERS? popup",
+     worded && worded.alerts.length === 0, worded);
+  game.popups[0].t = 0;   // drifted fifteen pixels up: clear of the mark
+  const drifted = drawFrozenMarks(API.screenCtx, 0, 0);
+  ok("...and the '!' is back once the popup has drifted clear",
+     drifted && drifted.alerts.length === 1, drifted);
+  game.popups = [];
+  game.phase = 'play';
+  ok('and running, there are none', drawFrozenMarks(API.screenCtx, 0, 0) === null);
+  game.phase = 'command';
+
+  /* ...and a real frame draws them: read off the glass through render(),
+     not by calling the helper, so a frame that forgets them is caught. The
+     roster, camp chip and pill still cover them, as they covered the pixel
+     marks: the pill's own clip to the HUD (a rect from the top of the
+     glass to the maze's first row) comes after both. */
+  const glassLog = (run) => {
+    const sctx = API.screenCtx, log = [];
+    const kinds = ['arc', 'moveTo', 'lineTo', 'rect', 'clip', 'fill', 'stroke', 'drawImage'];
+    kinds.forEach(k => {
+      sctx[k] = (...args) => {
+        log.push({ k, args, fillStyle: sctx.fillStyle, strokeStyle: sctx.strokeStyle });
+      };
+    });
+    try { run(); } finally { kinds.forEach(k => { delete sctx[k]; }); }
+    return log;
+  };
+  game.shakeT = 0;
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+  const markLog = glassLog(() => render());
+  const s0 = S(), p0 = { x: g0.x * s0, y: (g0.y + HUD) * s0 };
+  const bang = markLog.findIndex(o => o.k === 'arc' && near(o.args[0], p0.x)
+    && near(o.args[1], p0.y - 9.4 * s0) && near(o.args[2], s0 * 1.7 / 2) && o.fillStyle === PAL.white);
+  const corners = [-1, 1].flatMap(dx => [-1, 1].map(dy => ({ x: p0.x + dx * 8.6 * s0, y: p0.y + dy * 8.6 * s0 })));
+  const cornerAt = corners.map(c => markLog.findIndex(o => o.k === 'lineTo' && near(o.args[0], c.x) && near(o.args[1], c.y)));
+  ok("a frozen frame draws the '!' over the ghost with no orders, on the glass", bang >= 0, { bang });
+  ok('...and the selection brackets, all four corners, round the selected ghost',
+     cornerAt.every(i => i >= 0), cornerAt);
+  const pillClip = markLog.findIndex(o => o.k === 'rect' && o.args[0] === 0 && o.args[1] === 0
+    && near(o.args[3], API.pillBox().floor));
+  ok("...both under the status pill, which comes after them, as it did over the pixel marks",
+     pillClip > bang && cornerAt.every(i => i < pillClip), { bang, cornerAt, pillClip });
+  {
+    const r = String(render), lo = r.indexOf('drawFrozenMarks('), fu = r.indexOf('drawFrozenFurniture('),
+      cast = r.indexOf('drawLiftedCast(');
+    ok('...and the lifted cast still rides over the roster and the pill', lo >= 0 && lo < fu && fu < cast,
+       { lo, fu, cast });
+  }
+
+  // ---- the food: round, every piece of it, and none that has been eaten ----
+  {
+    const sx = 0, sy = 0, s1 = S();
+    const pelletsOnGlass = (log) => {
+      const discs = [];
+      log.filter(o => o.k === 'fill' && o.fillStyle === PAL.dot && o.args[0] && o.args[0].ops)
+        .forEach(o => o.args[0].ops.filter(op => op[0] === 'arc').forEach(op => discs.push(op[1] + ',' + op[2])));
+      return discs;
+    };
+    const stamps = (log) => log.filter(o => o.k === 'drawImage' && o.args[0] === frozenCache.power);
+    const want = [], wantPow = [];
+    API.dots.forEach((row, r) => row.forEach((d, c) => {
+      const x = tcx(c) * s1 + sx, y = (tcy(r) + HUD) * s1 + sy;
+      if (d === 1) want.push(x + ',' + y); else if (d) wantPow.push({ x, y });
+    }));
+    const foodLog = glassLog(() => render());
+    const got = pelletsOnGlass(foodLog), pow = stamps(foodLog);
+    const half = frozenCache.power ? frozenCache.power.width / 2 : 0;
+    ok('frozen, every pellet left on the board is a round disc on the glass (' + want.length + ')',
+       want.length > 100 && got.length === want.length && want.every(k => got.includes(k)),
+       { want: want.length, got: got.length });
+    ok('...and every energizer is stamped, steady, where it lies (' + wantPow.length + ')',
+       wantPow.length > 0 && pow.length === wantPow.length
+       && wantPow.every(p => pow.some(o => o.args[1] === Math.round(p.x - half) && o.args[2] === Math.round(p.y - half))),
+       { want: wantPow.length, got: pow.length });
+    // eat one: the next frozen frame has one disc fewer, and not that one
+    let er = -1, ec = -1;
+    API.dots.some((row, r) => row.some((d, c) => (d === 1 ? ((er = r), (ec = c), true) : false)));
+    API.dots[er][ec] = 0;
+    const eaten = pelletsOnGlass(glassLog(() => render()));
+    API.dots[er][ec] = 1;
+    const gone = (tcx(ec) * s1 + sx) + ',' + ((tcy(er) + HUD) * s1 + sy);
+    ok('...and an eaten pellet is gone from it on the next frame',
+       eaten.length === want.length - 1 && !eaten.includes(gone), { before: want.length, after: eaten.length });
+  }
+
+  // ---- what has no art up here still shows: from the punch-back scratch ----
+  const scratch = API.dotScratch;
+  const realGet = scratch.getContext;
+  const rec = recorder();
+  scratch.getContext = () => rec.ctx;
+  game.popups = [{ text: '400', x: tcx(6), y: tcy(5), t: 60, color: PAL.cyan }];
+  game.fruit = { idx: 0, t: 100 };
+  game.hunters[2].state = 'dissolving';
+  try { render(); } finally { scratch.getContext = realGet; }
+  const popped = rec.log.filter(o => o[0] === 'drawImage').length;
+  game.popups = []; game.fruit = null; game.hunters[2].state = 'active';
+  ok('frozen, a fruit, a dissolving ghost and a score popup come back over the black',
+     popped === 1 + 1 + 3, { popped });
+  // and the punched-back pellets are the round ones: no 2x2 squares over them
+  ok('...but no pixel pellet does', !rec.log.some(o => o[0] === 'fillRect' && o[3] === 2 && o[4] === 2));
+  resumeFromCommand();
+}
+
 console.log('\n== reduced motion snaps everything ==');
 {
   /* prefers-reduced-motion, flipped live the way a browser's own list
      flips: every entrance lands at once, every exit is already gone, and
      nothing about the state it shows is different. */
   const { reducedMotionMQ: mq, fx, pauseToCommand, resumeFromCommand, bankBand, fxIn,
-          springIn, easeOut, transmitT, shellAlpha, releaseRing, surveyWave, render,
+          springIn, easeOut, transmitT, shellAlpha, releaseRing, freezeWave, render,
           input, drawDragTag, tagAnim } = API;
   const S = () => API.scale;
   const sctx = API.screenCtx;
@@ -3049,10 +3830,10 @@ console.log('\n== reduced motion snaps everything ==');
   fx.thawAt = -1e9;
   mq.matches = true;
   pauseToCommand({ x: tcx(5), y: tcy(10) });
-  ok('the night bank arrives whole, on the click tick', game.phase === 'command' && bankBand() === null);
+  ok('the lifted board arrives whole, on the click tick', game.phase === 'command' && bankBand() === null);
   ok('the glass is simply there', fxIn() === 1 && springIn(0) === 1 && easeOut(0) === 1);
-  const wv = surveyWave(S(), 0, 0);
-  ok('the grid is laid at once, with no wave', !wv.moving && wv.bands.every(b => b === 0));
+  const wv = freezeWave(S(), 0, 0);
+  ok('and with no wave', !wv.moving);
 
   const d = game.hunters[0];
   Draw.begin(d);

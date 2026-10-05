@@ -28,6 +28,20 @@ function stubCanvas() {
   return c;
 }
 
+/* A path the way a canvas keeps one: a list of the commands it was given,
+   so a test can read back what was traced. Only the commands game.js uses
+   exist -- anything else throws, as it would on a browser without it,
+   rather than quietly drawing nothing. */
+class Path2D {
+  constructor() { this.ops = []; }
+  moveTo(x, y) { this.ops.push(['moveTo', x, y]); }
+  lineTo(x, y) { this.ops.push(['lineTo', x, y]); }
+  arcTo(x1, y1, x2, y2, r) { this.ops.push(['arcTo', x1, y1, x2, y2, r]); }
+  arc(x, y, r, a0, a1) { this.ops.push(['arc', x, y, r, a0, a1]); }
+  rect(x, y, w, h) { this.ops.push(['rect', x, y, w, h]); }
+  closePath() { this.ops.push(['closePath']); }
+}
+
 // one screen for the whole run, so tests and game.js address the same canvas
 const screen = stubCanvas();
 
@@ -35,6 +49,7 @@ const sandbox = {
   console,
   Math, JSON, Date, Set, Map, Array, Object, String, Number, Boolean,
   Int16Array, Float32Array, Error, isNaN, parseInt, parseFloat, Infinity, NaN,
+  Path2D,
   document: {
     createElement: (t) => (t === 'canvas' ? stubCanvas() : { style: {} }),
     getElementById: () => screen,
@@ -77,8 +92,11 @@ const src = fs.readFileSync(require('path').join(__dirname, '..', 'game.js'), 'u
        bankBand, splitBank, SPLIT_TICKS, syncShell, shell,
        bountyNow, dotsLeftNow, driftTiles, runOutFrom, orderTicks, cardState, pillState,
        BOOST_TICKS, CAMP_CHOICES, TOKENS, pillAnim, HELP_CHIP,
-       surveyWave, WAVE_TICKS, WAVE_FLARE, SHADOW, SHADOW_DROP, SHADOW_LIFT,
-       routeOrder, hotBeadsNow, computeHotBeads, hunterDrawOrder,
+       freezeWave, WAVE_TICKS, SHADOW, SHADOW_DROP, SHADOW_LIFT,
+       frozenBoardOn, frozenWallLoops, frozenWallPath, frozenBake, frozenCache,
+       drawFrozenBoard, drawFrozenDots, drawFrozenMarks, FB_INSET,
+       routeOrder, hotBeadsNow, computeHotBeads, hunterDrawOrder, orderPathPoints, routeArrow,
+       NATIVE_W, HUD_TOP,
        pointerTarget, syncCursor, ctlLook, PRESS_SCALE, TAP_SLOP_TOUCH,
        dragTag, drawDragTag, tagAnim, TAG_LIFT, pincerFor, handTicks,
        releaseRing, shellAlpha, transmitT, TRANSMIT_TICKS, pincerEar, PINCER_GAP,
@@ -87,6 +105,7 @@ const src = fs.readFileSync(require('path').join(__dirname, '..', 'game.js'), 'u
        get uiDpr() { return uiDpr; },
        get screenCtx() { return screenCtx; },
        get nativeCtx() { return nativeCtx; },
+       get dotScratch() { return dotScratch; },
        get uiFrame() { return uiFrame; },
        get uiClock() { return uiClock; },
        get dots() { return dots; },
@@ -94,6 +113,23 @@ const src = fs.readFileSync(require('path').join(__dirname, '..', 'game.js'), 'u
        get touchMode() { return touchMode; },
        setTouchMode(v) { touchMode = v; },
        get scale() { return scale; },
+       startDrill, endDrill, drillCheck, drillTick, drillOnCommit, loadTrap, tutResumeLocked,
+       onboarded, drillCopy, coachUI, coachFx, COACH_SHORT, hintWindowOpen, enterAttract, TRAP,
+       DRILL_GUARD, DRILL_FAIL_HOLD, DRILL_WATCH, DRILL_WATCH_MAX, DRILL_OUT, TAP_SLOP, TAP_MS, TAP_TRAVEL,
+       get forceDrill() { return forceDrill; },
+       setForceDrill(v) { forceDrill = v; },
+       resetOnboardMem() { onboardMem = false; },
+       coachScene, coachReady, playLook, coachIdle, coachStall, coachCardRect, gradSheetRect,
+       drawCoachLayer, drawCoachMarks, drillDenOrdered, layout, PAL, REFUSAL_SHOWN,
+       COACH_RIPPLE, COACH_ANYWHERE, COACH_SHOW, COACH_DEN_LIVE, COACH_SKIP, COACH_STALL, COACH_FADE,
+       DOCK_DWELL, DOCK_HOME, coachSet, coachDock, TYPE_ROLES, coachHero, heroMid, HERO_MOVE, FX_EXIT,
+       HERO_OLD, HERO_NEW, DEN, DEN_EXIT_X, DEN_EXIT_ROW, glassAt, pointerTarget,
+       setNativeCtx(v) { nativeCtx = v; },
+       TIP, TIP_SHOW, TIP_G1_PLAY, tipUI, tipTick, g1Wanted, tipCopy, tipRect, loadTips,
+       drawTipLayer, campPulse, gameOverUI, gameOverFx, gameOverChipUp, helpFx, HELP_CONFIRM,
+       practiceLabel, drawHelpLayer, tapPad, TUTORIAL_PARAM, trapSides, drillLaneRouted,
+       get tipBits() { return tipBits; },
+       setTipBits(v) { tipBits = v; },
      };`;
 vm.runInContext(src, sandbox, { filename: 'game.js' });
 
@@ -109,6 +145,11 @@ sandbox.__api.screen = screen;
 sandbox.__api.win = sandbox.window;
 sandbox.__api.doc = sandbox.document;
 sandbox.__api.reducedMotionMQ = reducedMotionMQ;
+/* The page's storage, as the game sees it. The stub answers '0' for every
+   key -- a returning player -- so a test that needs a first visit, or
+   wants to see what was written, swaps getItem/setItem on this object and
+   puts them back afterwards. */
+sandbox.__api.storage = sandbox.localStorage;
 
 /* The den lets nobody out without a route, but the scripted players in the
    sim scripts were measured against a den that emptied itself: each ghost

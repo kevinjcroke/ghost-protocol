@@ -50,18 +50,12 @@ const PAL = {
   pupil:   '#2121F0',
   peach:   '#F0C897',
   green:   '#21FF51',
-  grid:    '#002151',
-  /* second hardware palette bank, used when time is frozen. A real board
-     swapped palette entries; it could not alpha-blend a framebuffer. */
-  wallDim: '#002197',
-  dotDim:  '#C89751',   // one ladder step down per channel: dims without hue shift
-  doorDim: '#975147',
   /* later boards re-tint the frame, the way Ms. Pac-Man's cabinets did.
-     Each wall color ships with its own frozen-bank partner. */
+     Frozen time has no bank of its own any more: stopped, the board is
+     lifted off the glass and redrawn there (drawFrozenBoard), so nothing
+     here ever has to stand for "frozen". */
   wall2:    '#21C851',
-  wall2Dim: '#009721',
   wall3:    '#F09721',
-  wall3Dim: '#975100',
 };
 PAL.frightW = PAL.white;   // the flash is plain white, not a second near-white
 
@@ -196,9 +190,9 @@ const MAZE_SRC_3 = [
    forever and quietly repeal the wall-stop rule. test/no-infinite-lanes.js
    walks every board to hold that line. */
 const BOARDS = [
-  { src: MAZE_SRC,   tunnels: [14],         wall: PAL.wall,  wallDim: PAL.wallDim },
-  { src: MAZE_SRC_2, tunnels: [8, 20],      wall: PAL.wall2, wallDim: PAL.wall2Dim },
-  { src: MAZE_SRC_3, tunnels: [5, 14, 23],  wall: PAL.wall3, wallDim: PAL.wall3Dim },
+  { src: MAZE_SRC,   tunnels: [14],         wall: PAL.wall },
+  { src: MAZE_SRC_2, tunnels: [8, 20],      wall: PAL.wall2 },
+  { src: MAZE_SRC_3, tunnels: [5, 14, 23],  wall: PAL.wall3 },
 ];
 
 let TUNNEL_ROWS = BOARDS[0].tunnels;
@@ -220,8 +214,8 @@ function setBoard(i) {
   buildMaze();
   buildWallDistance();
   mazeLayer = renderMazeLayer(BOARDS[i].wall, PAL.door);
-  mazeLayerDim = renderMazeLayer(BOARDS[i].wallDim, PAL.doorDim);
   mazeLayerWhite = renderMazeLayer(PAL.white, PAL.white);
+  frozenCache.key = null;   // the frozen board's walls are this board's too
 }
 const DEN = { top: 12, bottom: 16, left: 10, right: 17,  // wall bounds
               inTop: 13, inBottom: 15, inLeft: 11, inRight: 16 };
@@ -1729,17 +1723,55 @@ const Draw = {
      forty-tile horseshoe they never drew.
      The den door is the one wall a route may end on: from the doorstep
      straight down onto either door tile, and that is the last step -- a
-     tip on the door can only retract. It is how a ghost is sent home. */
+     tip on the door can only retract. It is how a ghost is sent home.
+     A column past either edge (mc < 0 or mc >= COLS) is a pointer off the
+     glass, and which tile it means depends on which way the route has
+     been through the tunnel. So the tip carries an unwrapped column, u:
+     the route's first column, plus one for every step right and minus one
+     for every step left, seams included -- out of the right mouth is
+     27 -> 28, not 27 -> 0. Each lap of the board is one span of COLS.
+     - A route that has not been through (still on lap 0) reads the pointer
+       from the half of the board the tip is on, not from the shorter way
+       round: a pointer well past the right edge with the tip still short
+       of the right mouth is ahead of it, and the shorter way round would
+       have had it turn back across the board.
+     - A route that HAS been through reads it from that instead. Out of the
+       right mouth, a pointer past the right edge is out on the far side,
+       on the route's own lap, and the tip stops at it however far along
+       the far side it is. (Read from the tip's half of the board, a tip
+       that came out and walked on past the middle looked not yet through,
+       took the pointer for a whole lap ahead and ran off round the board
+       after it -- through the tunnel a second time.) Past the LEFT edge,
+       with the route out of the right mouth, is back the way it came.
+     The pointer is held to within one board's width of the edge: past
+     that there is no tile further out for it to mean, and no second lap. */
   extendToward(mc, mr) {
     const a = this.active;
     if (!a) return;
+    if (mc >= COLS) mc = Math.min(mc, 2 * COLS - 1);
+    else if (mc < 0) mc = Math.max(mc, -COLS);
+    let u = a.tiles[0].c;
+    for (let i = 1; i < a.tiles.length; i++) {
+      const d = a.tiles[i].c - a.tiles[i - 1].c;
+      u += d > 1 ? -1 : d < -1 ? 1 : d;               // a seam is one step
+    }
     let guard = 0;
     while (guard++ < 40) {
       const tip = a.tiles[a.tiles.length - 1];
       const onDoor = isDoor(tip.c, tip.r);
-      let dc = wrapCol(mc) - tip.c;
-      if (dc > COLS / 2) dc -= COLS;
-      if (dc < -COLS / 2) dc += COLS;
+      const lap = Math.floor(u / COLS);
+      let dc;
+      if (mc >= COLS) {
+        dc = lap === 0 ? (tip.c >= COLS / 2 ? mc : mc - COLS) - tip.c
+                       : mc + COLS * (lap < 0 ? lap : lap - 1) - u;
+      } else if (mc < 0) {
+        dc = lap === 0 ? (tip.c < COLS / 2 ? mc : mc + COLS) - tip.c
+                       : mc + COLS * (lap > 0 ? lap : lap + 1) - u;
+      } else {
+        dc = mc - tip.c;
+        if (dc > COLS / 2) dc -= COLS;
+        if (dc < -COLS / 2) dc += COLS;
+      }
       const dr = mr - tip.r;
       if (dc === 0 && dr === 0) break;
 
@@ -1763,6 +1795,7 @@ const Draw = {
         if (!home && (!isOpen(nc, nr) || inDen(nc, nr))) continue;
         if (back) a.tiles.pop();                    // retract
         else a.tiles.push({ c: nc, r: nr });
+        u += s.x;
         stepped = true;
         break;
       }
@@ -1792,8 +1825,11 @@ const Draw = {
       tiles = tiles.slice(0, tiles.length - 1);   // drop dup start tile
       closed = true;
     }
+    // read before the order lands: a route is what lets a den ghost go
+    const wasDen = a.hunter.state === 'idle' || a.hunter.state === 'respawn';
     a.hunter.setOrder(tiles, closed);
     Sound.uiCommit();
+    if (game.drill) drillOnCommit(game.hunters.indexOf(a.hunter), wasDen);
   },
 
   beginErase(game, mc, mr, px, py) {
@@ -2615,6 +2651,17 @@ const game = {
   demo: false,
   demoFright: false,
   hint: true,
+  /* game.tick on the ready -> play flip. game.tick never resets -- it runs
+     through the attract demo too -- so "the first seconds of a round" has
+     to be counted from here, not from zero. */
+  playTick0: 0,
+  /* The practice, while it runs: every rule it bends hangs off this one
+     object (see startDrill), and null means the real game, untouched. */
+  drill: null,
+  /* Real catches this game, the practice's never among them. Only the
+     game-over screen asks: a game that ended without one is the player
+     who never found the verb, and it offers the practice. */
+  catches: 0,
   helpOpen: false,      // the pocket manual behind the ? chip
   captureInfo: null,
   flashT: 0,
@@ -2649,6 +2696,14 @@ const game = {
   },
 
   newGame() {
+    /* Whatever route led here, no practice rule survives into a real
+       board -- and the camp limit it switched off comes back as the
+       player left it. */
+    if (this.drill) {
+      this.campLimit = this.drill.saved.campLimit;
+      this.campChoice = this.drill.saved.campChoice;
+      this.drill = null;
+    }
     this.level = 1;
     this.score = 0;
     this.contracts = 3;
@@ -2659,6 +2714,7 @@ const game = {
     buildMaze();
     this.dotsEaten = 0;
     this.evaderLives = 3;
+    this.catches = 0;
     shell.key = null;   // the room is relit from scratch on the next frame
     this.startLevel(false);
   },
@@ -2837,8 +2893,13 @@ const game = {
     const dotsLeft = dotsLeftNow();
     const banked = bountyNow();
     this.captureInfo = { banked, dotsLeft, hunters: bonusHunters, dirs: dirsSeen.size };
-    this.addScore(banked);
-    this.popup(this.evader.x, this.evader.y - 10, String(banked), PAL.cyan);
+    // a practice catch is real, but it is not a score: nothing banks, the
+    // high score is never written, and no number flies off him
+    if (!this.drill) {
+      this.addScore(banked);
+      this.popup(this.evader.x, this.evader.y - 10, String(banked), PAL.cyan);
+      this.catches++;
+    }
     if (bonusHunters >= 2 && dirsSeen.size >= 2) {
       this.popup(this.evader.x, this.evader.y - 20, 'PINCER', PAL.white);
     }
@@ -2853,12 +2914,21 @@ const game = {
       // 4s: the jingle runs ~3.8s and the siren must not start over it
       if (++this.phaseT > 240) {
         this.phase = 'play';
+        this.playTick0 = this.tick;
         Sound.startSiren();
       }
       return;
     }
     if (this.phase === 'capture') {
       this.phaseT++;
+      /* A practice catch spends no life and never reaches the next round:
+         the board holds on the finished spin and the practice graduates.
+         Any catch does -- a lucky lone one in the first scene included --
+         so no step can be left waiting on a capture that already came. */
+      if (this.drill) {
+        if (this.phaseT === 60) this.drill.step = 'graduate';
+        return;
+      }
       if (this.phaseT === 80) {
         /* He has lives, the way the original's yellow guy did. A capture
            spends one; the board and its dots persist across his deaths, so
@@ -2919,7 +2989,7 @@ const game = {
     this.checkCollisions();
     if (this.phase !== 'play') return;
 
-    this.spawnFruitMaybe();
+    if (!this.drill) this.spawnFruitMaybe();   // the practice has no prize to chase
     if (this.fruit) {
       for (const h of this.hunters) {
         if (h.state !== 'active') continue;
@@ -2952,7 +3022,9 @@ const game = {
       this.hunters.forEach(h => { h.needsOrders = false; });
     }
 
-    if (this.dotsEaten >= dotTotal) {
+    /* Not in the practice: nothing there gets worse while a newcomer is
+       still working out that the click is the clock. */
+    if (!this.drill && this.dotsEaten >= dotTotal) {
       // he cleared the board: we lose a contract
       this.contracts--;
       this.phase = 'escaped';
@@ -2960,6 +3032,7 @@ const game = {
       Sound.stopSiren();
       Sound.hunterLost();
     }
+    if (this.drill) drillTick();
   },
 
   /* attract-mode demo: a squad that plays the game the way it's meant to be
@@ -3057,11 +3130,13 @@ const input = {
   dragOrigin: null, dragMoved: false,
   touchId: null,         // the finger currently standing in for the mouse
   pendingResume: false,  // a touch that will mean "go" if it lifts as a tap
+  cardDown: false,       // a press held on the practice's card, which the maze never saw
   pressT: 0,             // when the press landed, for the quick-tap ruling
   // the mouse at rest, for the glass's hover and cursor: display px, and
   // whether it is over the page at all. A finger never sets these.
   dx: -1, dy: -1, hovering: false,
-  pressedCtl: null,      // the control under a press: 'play' 'camp' 'slotN' 'help' 'close'
+  pressedCtl: null,      // the control under a press: 'play' 'camp' 'slotN' 'help' 'close' 'skip'
+                         // 'practice' (the manual's) 'retry' (the game-over chip)
   hoverCtl: null,        // ...and under a resting mouse
 };
 
@@ -3148,6 +3223,14 @@ function pauseToCommand(origin) {
     fx.enterAt = uiClock;
   }
 }
+/* A freeze the player asked for, by press or key -- not the camp limit's,
+   not the manual's. The first one in a real game is the moment the click
+   is learned, and the first-game toast is told so and bows out. */
+function handFreeze(origin) {
+  const was = game.phase === 'play';
+  pauseToCommand(origin);
+  if (was && game.phase === 'command') tipFreezeSeen();
+}
 /* Where a ghost stands, as a freeze origin -- or the middle of the maze
    when that slot has nobody commandable to point at. */
 function ghostOrigin(i) {
@@ -3193,6 +3276,12 @@ function resumeFromCommand() {
   if (game.phase === 'command') {
     if (Draw.active) Draw.commit(input.dragMoved);
     Draw.endErase();
+    drillCheck();   // a route committed just now can be the one that opens the gate
+    /* The practice's one gate: while a step's lesson is "draw first",
+       PLAY says no in exactly the voice it already uses for an overdue
+       ghost, so a mouse press on empty maze reads as a refusal rather
+       than a freeze-and-thaw flicker that teaches nothing. */
+    if (tutResumeLocked()) { drillRefuse(); return; }
     const stalled = stalledHunter();
     if (stalled) {
       // refuse: point at the ghost that still needs somewhere to be
@@ -3203,6 +3292,20 @@ function resumeFromCommand() {
       return;
     }
     game.phase = 'play';
+    const d = game.drill;
+    if (d) {
+      /* Every run is judged afresh, on what was drawn for this one --
+         unless a miss is judged and still being shown. Stopping time to
+         watch him get away is the natural thing to do, and by then both
+         routes are spent: judged again, a player who sent two would be
+         told one ghost can't catch him. The hold carries on where it was. */
+      if (!d.holding) {
+        d.resumeT = 0; d.stopT = 0;
+        d.failKind = null; d.failHoldT = 0;
+        d.ordersAtResume = game.hunters.filter(h => h.path).length;
+      }
+      d.ran = true;
+    }
     fx.thawAt = uiClock;
     Sound.uiThaw();
     Sound.tapeStart(game.frightT <= 0);
@@ -3217,17 +3320,322 @@ function openHelp() {
     pauseToCommand({ x: HELP_CHIP.x, y: HELP_CHIP.y - HUD_TOP * TILE });
   }
   game.helpOpen = true;
+  helpFx.confirmAt = -1e9;   // an END THIS GAME? left armed never carries over
   Sound.uiCommit();
 }
 function closeHelp() {
   game.helpOpen = false;
+  helpFx.confirmAt = -1e9;
   Sound.uiCommit();
 }
 
+/* The manual's PRACTICE control. From the title or a game over it is one
+   press: the manual shuts and the practice starts. In the practice it
+   starts it over. Over a game still being played it asks first, inline --
+   the label turns to END THIS GAME? for three seconds and a second press
+   inside them is the yes. No sheet over the sheet: the word changing is
+   the question, and doing nothing is the no. */
+const HELP_CONFIRM = 180;   // uiClock ticks the question stays asked
+function practiceLabel() {
+  if (game.drill) return 'RESTART PRACTICE';
+  if (game.phase === 'attract' || game.phase === 'gameover') return 'PRACTICE ▶';
+  return uiClock - helpFx.confirmAt < HELP_CONFIRM ? 'END THIS GAME?' : 'PRACTICE ▶';
+}
+function pressPractice() {
+  if (practiceLabel() === 'PRACTICE ▶' && game.phase !== 'attract' && game.phase !== 'gameover') {
+    helpFx.confirmAt = uiClock;
+    Sound.uiCommit();
+    return;
+  }
+  closeHelp();
+  startDrill();
+}
+
+/* ------------------------------ the practice ----------------------------
+   A first-time visitor's first press starts this instead of a round: the
+   real opening of board one, then one fixed trap, then a real game. It
+   teaches by letting the real rules happen. The evader runs his own brain
+   at his own speed in both scenes, and nothing is ever drawn for the
+   player -- a lesson in which the game draws the route teaches watching.
+   What it does bend, it bends through game.drill alone: no fruit, no
+   escape, no score, no lives, no camp limit, no energizers, and a PLAY
+   that refuses until the step's route exists. newGame() nulls it, so no
+   way out of here can carry a practice rule onto a real board.
+   Sim and presentation split the usual way. drillTick runs inside
+   game.update, and drillCheck on input and after the tick loop, for the
+   steps that turn while time is stopped; both read sim, Draw and the
+   manual only. What the card SAYS may lean on uiClock (coachFx); what
+   the practice DOES never does. */
+
+/* Scene two. He stands mid-corridor on the top row with a ghost parked
+   under each end of it. Measured on the real sim, over six seeds and with
+   or without energizers: with no orders, RAZE alone or MIST alone he gets
+   out every time; send both -- straight at him, only to the corridor's
+   ends, or a tile short of them -- and he is caught 27 ticks after the
+   resume, from two sides, every time. test/tutorial.js pins that split,
+   so an AI change that breaks the lesson breaks the build. */
+const TRAP = { raze: { c: 6, r: 4 }, mist: { c: 13, r: 5 }, evader: { c: 9, r: 1 } };
+const DRILL_WATCH = 45;        // ticks a watched ghost stands dead before the point is made
+const DRILL_WATCH_MAX = 240;   // ...or this long after the resume, whatever it did
+const DRILL_OUT = 30;          // ticks a den ghost must be out and hunting
+const DRILL_TRAP_MAX = 360;    // a trap still unsprung after this is a miss
+const DRILL_FAIL_HOLD = 30;    // he is seen getting away before the scene resets
+const DRILL_GUARD = 18;        // uiClock ticks (300ms) a fresh screen ignores presses
+
+/* First run is "gpOnboard has never been written". Written 'started' the
+   moment the practice begins, so a tab closed halfway never auto-starts
+   it again; 'done' or 'skipped' when it ends. Storage that refuses falls
+   back to memory: then it runs at most once per page load, which is
+   never a trap, because SKIP is always on the card. */
+let onboardMem = false;
+let forceDrill = false;        // ?tutorial: the next title-screen press is the practice
+// ?tutorial, ?tutorial=1, &tutorial -- the same test index.html makes for its line
+const TUTORIAL_PARAM = /[?&]tutorial(=|&|$)/;
+function onboarded() {
+  // memory first: storage can read fine and still refuse the write
+  if (onboardMem) return true;
+  try { return localStorage.getItem('gpOnboard') !== null; } catch (e) { return false; }
+}
+function markOnboard(v) {
+  onboardMem = true;
+  try { localStorage.setItem('gpOnboard', v); } catch (e) {}
+}
+
+/* The one door into a game from the title screen or the game-over screen.
+   A game over is not a first run, so only the title can start practice. */
+function startFromTitle() {
+  if (game.phase === 'attract' && (forceDrill || !onboarded())) startDrill();
+  else game.newGame();
+}
+
+/* No energizers in either scene: an early fright eats the ghost being
+   taught, and blue is a lesson for later. They become plain dots, so the
+   board still reads as board one. */
+function drillDots() {
+  for (const row of dots) {
+    for (let c = 0; c < row.length; c++) if (row[c] === 2) row[c] = 1;
+  }
+}
+
+/* Scene one is the real opening, live, from this very press: RAZE walks
+   out and drifts to the left wall, the other three sit in the den, he
+   starts eating. No READY -- the round is already the lesson, and the
+   first thing it asks for is the freeze. */
+function startDrill() {
+  const prior = game.drill;
+  game.drill = {
+    stage: 1, step: 'freeze',
+    playT: 0, resumeT: 0, stopT: 0, outT: 0,
+    watchIdx: -1, denIdx: -1, denDone: false, denSel: false,
+    ran: false,          // time has run since this step's gate last opened
+    fails: 0, ordersAtResume: 0, failKind: null, failHoldT: 0,
+    holding: false,      // a miss judged, and he is still being seen getting away
+    refusals: 0, taps: 0,
+    // a restart hands back what the player came in with, not the practice's own
+    saved: prior ? prior.saved : { campLimit: game.campLimit, campChoice: game.campChoice },
+  };
+  if (!onboarded()) markOnboard('started');   // replays write only how they end
+  forceDrill = false;
+  /* The camp limit would freeze on the player's behalf the moment RAZE
+     stood at its wall. Off, and the roster hides its chip, so the saved
+     setting is exactly what comes back. */
+  game.campLimit = null;
+  game.level = 1;
+  game.params = levelParams(1);
+  game.demo = false;
+  setBoard(0);
+  buildMaze();
+  drillDots();
+  game.dotsEaten = 0;
+  game.fruit = null;
+  game.lastFruitAt = -1;
+  game.foodDist = null;
+  game.hint = false;
+  game.popups = [];
+  game.captureInfo = null;
+  game.shakeT = 0;
+  game.resetActors();
+  Draw.active = null;
+  Draw.erase = null;
+  Draw.select(0);
+  game.phase = 'play';
+  game.phaseT = 0;
+  game.playTick0 = game.tick;
+  shell.key = null;
+  coachReset();   // a fresh card: its clocks, its lines, its dock, the 300ms guard
+  /* From the manual the practice can start over a stopped board, whose
+     siren is still sagged on the tape-stop. A fresh one, not that one. */
+  Sound.stopSiren();
+  Sound.startSiren();
+}
+
+/* Scene two, loaded between two ticks of live play and stopped at once
+   with the real freeze entrance out of him. A retry comes back without
+   the fanfare: he just got away, and the board says so plainly. */
+function loadTrap(isRetry) {
+  const d = game.drill;
+  buildMaze();
+  drillDots();
+  game.dotsEaten = 0;
+  game.fruit = null;
+  game.foodDist = null;     // his food map rebuilt on the first tick, not up to 19 later
+  game.popups = [];
+  game.captureInfo = null;
+  game.resetActors();
+  const park = (h, at) => {
+    h.state = 'active'; h.opening = false; h.frightImmune = true;
+    h.script = null; h.path = null; h.dir = null;
+    h.x = tcx(at.c); h.y = tcy(at.r);
+  };
+  park(game.hunters[0], TRAP.raze);
+  park(game.hunters[1], TRAP.mist);
+  game.evader.x = tcx(TRAP.evader.c);
+  game.evader.y = tcy(TRAP.evader.r);
+  game.evader.dir = null;
+  d.stage = 2;
+  d.step = 'trap';
+  d.resumeT = 0; d.stopT = 0; d.failHoldT = 0;
+  d.holding = false;   // the reason stays on the card; the run it judged is over
+  d.watchIdx = -1;
+  d.ran = false;
+  pauseToCommand({ x: game.evader.x, y: game.evader.y });
+  if (isRetry) fx.skipEnter = true;
+  Draw.select(0);
+}
+
+/* Is PLAY refused? While a step's lesson is "draw first", and until the
+   route it asks for exists. Once time has run in a step, freezing again
+   to look never locks the player in: the lesson is already under way. */
+function tutResumeLocked() {
+  const d = game.drill;
+  if (!d || game.phase !== 'command') return false;
+  const pathed = game.hunters.some(h => h.path);
+  if (d.step === 'draw') return !drillLaneRouted();
+  if (d.step === 'go' || d.step === 'trap') return !pathed && !d.ran;
+  if (d.step === 'den') return !drillDenOrdered();
+  return false;
+}
+/* A den ghost has its way out: a route while it is still inside or on
+   its way up, or it is already out on the board. */
+function drillDenOrdered() {
+  const d = game.drill;
+  const out = d.denIdx >= 0 ? game.hunters[d.denIdx] : null;
+  return game.hunters.some(h => h.path && h.inDenStates())
+    || !!(out && out.state === 'active');
+}
+
+/* The draw step's route: two tiles or more, and not a trip home. The red
+   ghost stands on row 11, and dragging it along that row "to the other
+   ghosts" walks the tip onto the door -- a real order, and the game keeps
+   it, but a ghost that goes and sits in the den never shows the step's
+   one lesson, stopping at a wall. So the card says so, and the step
+   waits for a route along a corridor. */
+function drillLaneRouted() {
+  return game.hunters.some(h => h.path && h.path.tiles.length >= 2 && !h.path.home);
+}
+
+/* A PLAY the practice will not take yet, answered in exactly the voice
+   PLAY already uses for an overdue ghost. */
+function drillRefuse() {
+  Sound.uiClear();
+  Sound.uiRefuse();
+  fx.refusedAt = uiClock;
+  game.drill.refusals++;
+}
+
+// Draw.commit's report: which ghost the player just gave a route to
+function drillOnCommit(i, wasDen) {
+  const d = game.drill;
+  d.watchIdx = i;
+  if (wasDen) { d.denDone = true; d.denIdx = i; }
+}
+
+/* The steps that turn while time is stopped, where update() never runs:
+   after every input event, after the tick loop, and inside a resume. */
+function drillCheck() {
+  const d = game.drill;
+  if (!d) return;
+  // a freeze made by opening the manual counts once the manual is shut
+  if (d.step === 'freeze' && game.phase === 'command' && !game.helpOpen) {
+    d.step = 'draw';
+    if (!Draw.active) Draw.select(0);   // RAZE, unless a grab already chose
+  }
+  if (d.step === 'draw' && drillLaneRouted()) {
+    d.step = 'go';
+    d.ran = false;
+  }
+  if (d.step === 'den' && game.phase === 'command' && !d.denSel) {
+    d.denSel = true;
+    if (!Draw.active) Draw.select(1);   // MIST, the one the card talks about
+  }
+}
+
+/* The steps that turn on live play. Last thing in update()'s play branch,
+   sim state only. */
+function drillTick() {
+  const d = game.drill;
+  if (!d || game.phase !== 'play') return;
+  d.playT++;
+  d.resumeT++;
+  if (d.step === 'go') {
+    /* Watching: the ghost walks the route, runs off its end, coasts to a
+       wall and stands there. That standing is the lesson, so it is given
+       three quarters of a second before the practice moves on. */
+    const w = game.hunters[d.watchIdx];
+    if (w && w.state === 'active' && !w.path && !w.dir) d.stopT++;
+    // a route that ended on the door was a trip home, and home it sits
+    else if (w && w.state === 'idle' && !w.path) d.stopT++;
+    if (d.stopT >= DRILL_WATCH || d.resumeT >= DRILL_WATCH_MAX) {
+      if (d.denDone) loadTrap(false);
+      else d.step = 'den';
+    }
+  } else if (d.step === 'den') {
+    const h = d.denIdx >= 0 ? game.hunters[d.denIdx] : null;
+    if (h && h.state === 'active' && ++d.outT >= DRILL_OUT) loadTrap(false);
+  } else if (d.step === 'trap') {
+    if (d.failKind === null) {
+      /* Out of his corridor, or down it past both ghosts, and the trap
+         has missed. Which lesson the retry teaches depends on how many
+         ghosts were sent. */
+      const t = game.evader.tile();
+      if (t.r >= 8 || t.c <= 2 || t.c >= 17 || d.resumeT >= DRILL_TRAP_MAX) {
+        d.failKind = d.ordersAtResume >= 2 ? 'open' : 'one';
+        d.failHoldT = 0;
+        d.holding = true;
+      }
+    } else if (++d.failHoldT >= DRILL_FAIL_HOLD) {
+      d.fails++;
+      loadTrap(true);
+    }
+  }
+}
+
+/* Out of the practice and into a real game: 'done' from the graduation
+   press, 'skipped' from SKIP. No confirm on SKIP -- they asked to play. */
+function endDrill(how) {
+  if (!game.drill) return;
+  markOnboard(how);
+  // a graduate has stopped time plenty; the first-game nudge is for the skipper
+  if (how === 'done') markTip(TIP.freeze);
+  Draw.active = null;
+  Draw.erase = null;
+  Draw.select(0);
+  game.popups = [];
+  coachUI.card = coachUI.skip = null;
+  /* The practice's siren is still going -- wailing, if SKIP came in live
+     play, or sagged flat on a tape-stop if it came while frozen -- and
+     newGame never touches it. READY must not play over it, and the round
+     after must start a real one, so it goes here, as it does on every
+     other way into READY. A catch has already stopped it; twice is fine. */
+  Sound.stopSiren();
+  game.newGame();   // nulls the drill and hands the camp limit back
+}
+
 function bindInput() {
-  window.addEventListener('keydown', (ev) => {
+  function keyDown(ev) {
     if (ev.repeat) return;
     Sound.ensure(); Sound.resume();
+    coachFx.pressAt = uiClock;   // the coach's idle clocks count from any touch of a key
     if (game.helpOpen) {
       // while the manual is up it owns the keyboard
       if (ev.code === 'Escape' || ev.code === 'Space' || ev.code === 'KeyH') {
@@ -3236,19 +3644,31 @@ function bindInput() {
       return;
     }
     if (ev.code === 'KeyH') { openHelp(); return; }
+    const d = game.drill;
+    if (d && d.step === 'graduate') {
+      // the graduation sheet: Space or Enter is the press that starts the game
+      if ((ev.code === 'Space' || ev.code === 'Enter') && coachFx.gradAt !== null
+          && uiClock - coachFx.gradAt >= DRILL_GUARD) {
+        ev.preventDefault();
+        endDrill('done');
+      }
+      return;
+    }
+    if (d && ev.code !== 'KeyM' && uiClock - coachFx.startedAt < DRILL_GUARD) return;
     if (ev.code === 'Space' || ev.code === 'KeyP') {
       ev.preventDefault();
-      if (game.phase === 'attract' || game.phase === 'gameover') { game.newGame(); return; }
+      if (game.phase === 'attract' || game.phase === 'gameover') { startFromTitle(); return; }
       // a key has no point on the glass; the ghost it will talk to does
-      if (game.phase === 'play') pauseToCommand(ghostOrigin(Draw.selected));
+      if (game.phase === 'play') handFreeze(ghostOrigin(Draw.selected));
       else if (game.phase === 'command') resumeFromCommand();
+      else if (game.phase === 'ready') tipNudge();   // heard, if not yet obeyed
     } else if (ev.code === 'Escape') {
       resumeFromCommand();
     } else if (ev.code >= 'Digit1' && ev.code <= 'Digit4') {
       // pick a ghost by number, even if it is buried under the other three
       const i = Number(ev.code.slice(5)) - 1;
       if (game.hunters[i] && game.hunters[i].isCommandable()) {
-        if (game.phase === 'play') pauseToCommand(ghostOrigin(i));
+        if (game.phase === 'play') handFreeze(ghostOrigin(i));
         Draw.select(i);
       }
     } else if (ev.code === 'Tab') {
@@ -3259,14 +3679,16 @@ function bindInput() {
           const i = (Draw.selected + n) % game.hunters.length;
           if (game.hunters[i].isCommandable()) { next = i; break; }
         }
-        if (game.phase === 'play') pauseToCommand(ghostOrigin(next < 0 ? Draw.selected : next));
+        if (game.phase === 'play') handFreeze(ghostOrigin(next < 0 ? Draw.selected : next));
         if (next >= 0) Draw.select(next);
       }
     } else if (ev.code === 'KeyM') {
       Sound.muted = !Sound.muted;
       Sound.setSirenAudible(!Sound.muted && game.phase === 'play' && game.frightT <= 0);
     }
-  });
+  }
+  // every input event ends by letting a practice step that turned on it turn
+  window.addEventListener('keydown', (ev) => { keyDown(ev); drillCheck(); });
   screenCanvas.addEventListener('contextmenu', ev => ev.preventDefault());
 
   /* Press, drag, release: the only three verbs the game knows. Mouse buttons
@@ -3277,11 +3699,18 @@ function bindInput() {
     const p = toNative(src);
     const dp = toDisplay(src);
     input.mx = p.x; input.my = p.y;
+    coachFx.pressAt = uiClock;   // ...and from any press at all
     /* The manual sits above everything, including the attract screen. While
        it is open no click reaches the game: the X or anywhere off the page
        closes it, everything else is ignored. */
     if (button === 0) { input.pressedCtl = null; fx.release = null; }
     if (game.helpOpen) {
+      // PRACTICE sits left of the X, so its pad reaches every way but that one
+      if (button === 0 && inRect(dp, helpUI.practice, tapPad(4, 1, 4, 4))) {
+        input.pressedCtl = 'practice';
+        pressPractice();
+        return;
+      }
       if (button === 0 && inRect(dp, helpUI.close, tapPad(4, 4, 4, 4))) input.pressedCtl = 'close';
       if (button === 0 && (inRect(dp, helpUI.close, tapPad(4, 4, 4, 4)) || !inRect(dp, helpUI.panel))) closeHelp();
       return;
@@ -3291,10 +3720,59 @@ function bindInput() {
       openHelp();
       return;
     }
-    if (game.phase === 'attract' || game.phase === 'gameover') { game.newGame(); return; }
+    const d = game.drill;
+    if (d) {
+      /* The graduation sheet: the whole screen is its button, once it has
+         been up long enough that this cannot be the tail of the catch. */
+      if (d.step === 'graduate') {
+        if (button === 0 && coachFx.gradAt !== null && uiClock - coachFx.gradAt >= DRILL_GUARD) {
+          endDrill('done');
+        }
+        return;
+      }
+      // the press that started the practice, arriving twice
+      if (uiClock - coachFx.startedAt < DRILL_GUARD) return;
+      /* The coach card is glass, not maze. SKIP is its one control; the
+         rest of it swallows a press while time is stopped, so reading the
+         card can never resume or trip the gate. In live play a press on
+         it still stops time -- the card says "anywhere", and it is
+         somewhere. Over a ghost or an arrowhead it is not glass at all
+         (cardHolds). */
+      if (button === 0 && coachUI.skip && inRect(dp, coachUI.skip, tapPad(3, 3, 3, 3))) {
+        input.pressedCtl = 'skip';
+        endDrill('skipped');
+        return;
+      }
+      /* "Click anywhere" invites a double-click, and the hero's freeze
+         sends its rect to the bottom dock at once, so the second press of
+         one lands on the bare maze it left -- a refused PLAY, or a ghost
+         it was hiding. For DRILL_GUARD after that freeze the spot the hero
+         stood on is still its glass, and swallows a left press as the
+         card does. SKIP, above, is where it rests throughout. */
+      const left = coachFx.heroLeft;
+      if (button === 0 && left && uiClock - left.at < DRILL_GUARD && inRect(dp, left)) {
+        input.cardDown = true;
+        return;
+      }
+      if (cardHolds(dp, p.x, p.y)) {
+        input.cardDown = true;   // held on the glass: still a pointer down
+        if (game.phase === 'play') {
+          if (coachHero()) coachFx.heroLeft = Object.assign({ at: uiClock }, coachUI.card);
+          pauseToCommand(p);
+        }
+        return;
+      }
+    }
+    // a game that ended without a catch offers the practice, once
+    if (button === 0 && game.phase === 'gameover' && inRect(dp, gameOverUI.practice, tapPad(3, 3, 3, 3))) {
+      input.pressedCtl = 'retry';
+      startDrill();
+      return;
+    }
+    if (game.phase === 'attract' || game.phase === 'gameover') { startFromTitle(); return; }
     if (button === 2) {
       input.rightDown = true;
-      if (game.phase === 'play') { pauseToCommand(p); return; }
+      if (game.phase === 'play') { handFreeze(p); return; }
       if (game.phase === 'command') Draw.beginErase(game, Math.floor(p.x / TILE), Math.floor(p.y / TILE), p.x, p.y);
       return;
     }
@@ -3303,6 +3781,10 @@ function bindInput() {
     input.dragOrigin = { x: p.x, y: p.y };
     input.dragMoved = false;
     input.pressT = performance.now();
+    /* READY ignores presses, as it always has -- the round has not begun.
+       But a first game's toast is up, saying what the press will do, and
+       it nods: the press was heard, it is simply early. */
+    if (game.phase === 'ready') tipNudge();
     if (game.phase !== 'play' && game.phase !== 'command') return;
     // roster buttons live in display space, above the glass
     if (game.phase === 'command') {
@@ -3339,7 +3821,7 @@ function bindInput() {
     const wasPlaying = game.phase === 'play';
     // picked first, so time can stop out of the ghost that was grabbed
     const picked = Draw.pickAt(p.x, p.y);
-    if (wasPlaying) pauseToCommand(picked || p);
+    if (wasPlaying) handFreeze(picked || p);
     if (picked && game.phase === 'command') Draw.begin(picked);
     else if (!picked && game.phase === 'command' && !wasPlaying) {
       // an arrowhead is a handle: pick a committed route up at its tip and
@@ -3374,6 +3856,12 @@ function bindInput() {
         // lift that can no longer mean "go" lets its ring go
         input.pressedCtl = null;
         if (fx.release && fx.release.brokeAt === null) fx.release.brokeAt = uiClock;
+        /* A finger that lands on empty maze and swipes is, in the practice,
+           a newcomer drawing the corridor they want instead of starting on
+           the ghost. The mouse's press there is already a refused PLAY and
+           the card says why; the finger's never becomes one, so it would
+           get no answer at all. Heard as the same refusal, once a gesture. */
+        if (input.pendingResume && !Draw.active && tutResumeLocked()) drillRefuse();
       }
     }
     if (game.phase !== 'command') return;
@@ -3391,11 +3879,16 @@ function bindInput() {
          claims the swipe for itself. So pressure against the playfield's
          edge is read as intent: a pointer parked in the outermost strip
          targets the wrap zone, and the tip walks the tunnel. Everywhere
-         but a tunnel row the beyond-edge tile is wall and nothing moves. */
+         but a tunnel row the beyond-edge tile is wall and nothing moves.
+         A pointer actually OFF the glass is not clamped to that one tile,
+         though: a mouse carried on past the edge asks for the tiles further
+         past it, so after the tip comes out of the far mouth it keeps
+         following -- along the far side's corridor, and up or down into its
+         turns. Dragging back over the board takes it back through. */
       let mc = Math.floor(p.x / TILE);
       const edge = touchMode ? TILE : TILE / 2;
-      if (p.x < edge) mc = -1;
-      else if (p.x > NATIVE_W - edge) mc = COLS;
+      if (p.x >= 0 && p.x < edge) mc = -1;
+      else if (p.x <= NATIVE_W && p.x > NATIVE_W - edge) mc = COLS;
       if (input.dragMoved) Draw.extendToward(mc, Math.floor(p.y / TILE));
     } else if (input.rightDown) {
       Draw.eraseSweep(p.x, p.y);
@@ -3404,6 +3897,7 @@ function bindInput() {
 
   function pressUp(src) {
     input.leftDown = false;
+    input.cardDown = false;
     input.pressedCtl = null;
     // a ring still whole was answered by this lift; a broken one fades out
     if (fx.release && fx.release.brokeAt === null) fx.release = null;
@@ -3426,6 +3920,11 @@ function bindInput() {
       if (tap) {
         const at = input.dragOrigin || p;
         Draw.cycleAt(at.x, at.y);
+        if (game.drill) {
+          // the card can tell a tap from a drag, and says so
+          game.drill.taps++;
+          coachFx.tapAt = uiClock;
+        }
       }
     } else if (input.pendingResume && !input.dragMoved) {
       resumeFromCommand();
@@ -3438,6 +3937,7 @@ function bindInput() {
     touchMode = false;
     Sound.ensure(); Sound.resume();
     pressDown(ev, ev.button);
+    drillCheck();
   });
   window.addEventListener('mousemove', (ev) => {
     pressMove(ev);
@@ -3452,9 +3952,11 @@ function bindInput() {
     syncCursor();
   });
   window.addEventListener('mouseup', (ev) => {
+    input.cardDown = false;   // whichever button it was held with
     if (ev.button === 2) { input.rightDown = false; Draw.endErase(); return; }
     if (ev.button !== 0) return;
     pressUp(ev);
+    drillCheck();
   });
 
   /* ---- touch ----
@@ -3487,6 +3989,7 @@ function bindInput() {
     if (!first || input.touchId !== null) return;   // a gesture is already running
     input.touchId = first.identifier;
     pressDown(first, 0);
+    drillCheck();
   }, touchOpts);
 
   screenCanvas.addEventListener('touchmove', (ev) => {
@@ -3505,6 +4008,7 @@ function bindInput() {
     if (!mine) return;              // some other finger let go; not our gesture
     input.touchId = null;
     pressUp(mine);
+    drillCheck();
   }
   screenCanvas.addEventListener('touchend', touchRelease, touchOpts);
   screenCanvas.addEventListener('touchcancel', touchRelease, touchOpts);
@@ -3533,6 +4037,11 @@ function layout() {
   screenCtx = screenCanvas.getContext('2d');
   screenCtx.imageSmoothingEnabled = false;
   buildTypeScale(dpr);
+  coachSets = new WeakMap();   // a new glass sets every sentence afresh
+  /* ...and the card's spring holds display px of the old glass: dropped,
+     the first frame at the new scale lands at rest, as a practice's first
+     frame does, instead of flying in from where the old scale left it */
+  coachFx.geo = null;
   rescaleGlass();
   /* BEGIN CRT PASS -- everything below models the glass, not the board. It
      runs on the scaled-up display canvas and never touches the palette. */
@@ -3560,17 +4069,18 @@ function layout() {
   /* END CRT PASS */
 }
 
-/* The freeze is a palette-bank swap, and a bank swap is something a 1981
-   board could stage: reprogram the bank on a raster interrupt and every
-   scanline below the split takes the other colors. So stopped time arrives
-   as a band of the night bank opening up and down from the row that
-   stopped it, whole tile rows at a time, and is complete in about 100ms.
-   Every pixel is still a palette entry; nothing fades. Only the entrance
-   is staged -- the phase flipped on the click, and a thaw snaps straight
-   back to the live bank, because showing the night colors over a running
-   board would say time is stopped when it is not.
+/* Frozen, the board leaves the machine: the command layer redraws it on
+   the glass (drawFrozenBoard), and the framebuffer has nothing of its own
+   to show in those rows. The handover is staged the way a 1981 board
+   staged anything mid-frame, on a raster interrupt: stopped time arrives
+   as a band opening up and down from the row that stopped it, whole tile
+   rows at a time, complete in about 100ms -- live pixels outside it, the
+   lifted board inside. Nothing fades. Only the entrance is staged -- the
+   phase flipped on the click, and a thaw snaps straight back to the
+   pixels, because a frozen-looking board over a running one would say
+   time is stopped when it is not.
    Returns the band as [lo, hi) maze rows, or null when the whole board is
-   in one bank. */
+   on one side of the split. */
 const SPLIT_TICKS = 6;
 function bankBand() {
   if (game.phase !== 'command' || fx.skipEnter || reducedMotion()) return null;
@@ -3581,18 +4091,27 @@ function bankBand() {
   if (lo <= 0 && hi >= MAZE_ROWS) return null;
   return { lo: Math.max(0, lo), hi: Math.min(MAZE_ROWS, hi) };
 }
-/* Paint something that exists in both banks. `paint(dim)` draws it in one
-   bank; mid-split it runs twice, the night bank under a clip of whole tile
-   rows, so the walls, the pellets on the board, the pellets punched back
-   over the orders and the grid pips all split on the same scanline and
-   never disagree with each other. */
+/* Paint something either side of the split. `paint(frozen)` draws it for
+   one side; mid-split it runs twice, each under a clip of whole tile rows
+   -- the live rows above and below the band, then the band -- so the
+   walls, the pellets on the board and the pellets punched back over the
+   orders all split on the same scanline and never disagree with each
+   other. The framebuffer paints nothing on the frozen side: those rows
+   are the lifted board's (frozenClip reads the same band). */
 function splitBank(g, paint) {
   const band = bankBand();
   if (!band) { paint(game.phase === 'command'); return; }
-  paint(false);
+  const y0 = (band.lo + HUD_TOP) * TILE, y1 = (band.hi + HUD_TOP) * TILE;
   g.save();
   g.beginPath();
-  g.rect(0, (band.lo + HUD_TOP) * TILE, NATIVE_W, (band.hi - band.lo) * TILE);
+  g.rect(0, 0, NATIVE_W, y0);
+  g.rect(0, y1, NATIVE_W, NATIVE_H - y1);
+  g.clip();
+  paint(false);
+  g.restore();
+  g.save();
+  g.beginPath();
+  g.rect(0, y0, NATIVE_W, y1 - y0);
   g.clip();
   paint(true);
   g.restore();
@@ -3648,51 +4167,6 @@ function drawHUD(g) {
   }
 }
 
-function drawCommandOverlay(g) {
-  const yOff = HUD_TOP * TILE;
-  // command grid pips at open-tile corners: night-bank furniture, so they
-  // arrive with the split and not ahead of it
-  splitBank(g, (dim) => {
-    if (!dim) return;
-    g.fillStyle = PAL.grid;
-    for (let r = 0; r <= MAZE_ROWS; r++) {
-      for (let c = 0; c <= COLS; c++) {
-        const open = isOpen(c, r) || isOpen(c - 1, r) || isOpen(c, r - 1) || isOpen(c - 1, r - 1);
-        if (open) g.fillRect(c * TILE, r * TILE + yOff, 1, 1);
-      }
-    }
-  });
-  const blink = (uiFrame / 20 | 0) % 2 === 0;
-
-  /* The order trails themselves are not drawn here. They belong to the
-     command layer, which is rendered above the glass at display resolution
-     -- see drawOrderLayer. The board is 1981; the orders are not. */
-  game.hunters.forEach((h, i) => {
-    // ring the commandable hunters; mark the parked-and-stupid ones
-    if (h.isCommandable()) {
-      const hx = Math.round(h.x), hy = Math.round(h.y) + yOff;
-      // a ghost waiting in the den is not camping: waiting there is legal
-      if (h.state === 'active' && !h.path && !h.dir && blink) {
-        drawText(g, '!', hx - 4, hy - 16, PAL.white);
-      }
-      /* Brackets mark the SELECTED ghost only, and hold steady. When all
-         four blinked at once, "selected" was invisible on the board; the
-         blink stays reserved for the needs-orders alert above. */
-      if (i === Draw.selected && !Draw.active) {
-        // selection brackets: corners only, so the sprite stays readable
-        g.fillStyle = PAL.white;
-        for (const sx of [-9, 8]) {
-          for (const sy of [-9, 8]) {
-            g.fillRect(hx + sx, hy + sy, 1, 1);
-            g.fillRect(hx + sx + (sx < 0 ? 1 : -3), hy + sy, 3, 1);
-            g.fillRect(hx + sx, hy + sy + (sy < 0 ? 1 : -3), 1, 3);
-          }
-        }
-      }
-    }
-  });
-}
-
 /* The selected ghost draws last, so picking one from the roster visibly
    floats it to the top of whatever pile it is standing in. */
 function hunterDrawOrder() {
@@ -3707,15 +4181,15 @@ function hunterDrawOrder() {
 
 function drawPlayfield(g) {
   const yOff = HUD_TOP * TILE;
-  // maze — frozen time swaps to the second palette bank rather than dimming,
-  // split along a raster line while the swap is arriving (see splitBank)
+  // maze -- frozen time lifts it off the glass (drawFrozenBoard), split
+  // along a raster line while that is arriving (see splitBank)
   if (game.phase === 'flash') {
     const on = (game.flashT / 12 | 0) % 2 === 0;
     g.drawImage(on ? mazeLayerWhite : mazeLayer, 0, yOff);
   } else {
-    splitBank(g, dim => g.drawImage(dim ? mazeLayerDim : mazeLayer, 0, yOff));
+    splitBank(g, frozen => { if (!frozen) g.drawImage(mazeLayer, 0, yOff); });
   }
-  if (game.phase !== 'flash') splitBank(g, dim => drawDots(g, dim ? PAL.dotDim : PAL.dot));
+  if (game.phase !== 'flash') splitBank(g, frozen => { if (!frozen) drawDots(g, PAL.dot); });
   // fruit
   if (game.fruit) {
     g.drawImage(SPRITES.fruit[game.fruit.idx % SPRITES.fruit.length],
@@ -3729,10 +4203,10 @@ function drawPlayfield(g) {
       drawTrail(g, tiles, h.color, { closed: h.path.closed, ants: -(uiFrame >> 2), faint: true });
     });
   }
-  /* The order overlay belongs to the background layer, so it goes down before
-     the sprites: hardware gave sprites priority, and a lattice dot punched
-     through a hunter's eye is the one artifact that cannot be explained. */
-  if (game.phase === 'command') drawCommandOverlay(g);
+  /* Frozen, the selection brackets and the needs-orders mark are the
+     glass's now, drawn crisp over the lifted board (drawFrozenMarks): a
+     chunky bracket would be the one thing left on it that looked like
+     the old screen. */
   // actors
   if (game.phase === 'capture') {
     // spin the caught evader
@@ -3755,12 +4229,8 @@ function drawPlayfield(g) {
   } else {
     hunterDrawOrder().forEach(h => h.draw(g, game));
   }
-  // popups, held inside the screen so an edge capture still reads
-  game.popups.forEach(p => {
-    const half = p.text.length * 4;
-    const x = Math.max(half + 2, Math.min(NATIVE_W - half - 2, p.x));
-    drawTextCentered(g, p.text, x, Math.max(0, p.y + yOff - (90 - p.t) / 6), p.color);
-  });
+  // popups -- frozen, they ride the punch-back instead, over the lifted board
+  if (game.phase !== 'command') drawPopups(g);
   /* The message slot: the one place on the board where text belongs, the
      same row the round-start banner uses. Everything routes through here.
      Frozen time says nothing here: the banner blanked a corridor of the
@@ -3773,10 +4243,39 @@ function drawPlayfield(g) {
     drawMessage(g, 'TARGET ESCAPED', PAL.red);
   } else if (game.phase === 'gameover') {
     drawMessage(g, 'GAME  OVER', PAL.red);
-  } else if (game.phase === 'play' && game.hint && game.tick < 1200
-             && (uiFrame / 24 | 0) % 2 === 0) {
+  } else if (hintWindowOpen() && (uiFrame / 24 | 0) % 2 === 0) {
     drawMessage(g, 'GRAB A GHOST', PAL.peach);
   }
+}
+
+/* Score popups, held inside the screen so an edge capture still reads.
+   Their ticks run out frozen or not, so one can still be up when time
+   stops; it is board text, palette and all, wherever it is drawn. */
+/* Where a popup's text sits this tick, in native canvas px: held inside the
+   screen so an edge capture still reads, and drifting up as it ages. The
+   glass asks too -- a mark drawn over a popup is a mark drawn over words. */
+function popupBox(p) {
+  const half = p.text.length * 4;
+  const x = Math.max(half + 2, Math.min(NATIVE_W - half - 2, p.x));
+  const y = Math.max(0, p.y + HUD_TOP * TILE - (90 - p.t) / 6);
+  return { x: x - half, y, w: half * 2, h: TILE };
+}
+function drawPopups(g) {
+  game.popups.forEach(p => {
+    const b = popupBox(p);
+    drawTextCentered(g, p.text, b.x + b.w / 2, b.y, p.color);
+  });
+}
+
+/* The first untouched seconds of a real round, when the board's message
+   slot says GRAB A GHOST and the ? chip breathes. Counted from the round's
+   own start: game.tick runs through the attract demo, and a window read
+   off it had usually closed before anyone could see it. The practice has
+   its own card, a first game has its toast saying the same thing better,
+   and one voice at a time is plenty. */
+function hintWindowOpen() {
+  return game.phase === 'play' && game.hint && !game.drill && !g1Wanted()
+    && game.tick - game.playTick0 < 960;
 }
 
 /* The board's one message slot. Text occupies whole tile cells and blanks
@@ -3896,7 +4395,11 @@ function frame(now) {
     acc -= TICK_MS; steps++;
     // the attract pages turn on ticks, like everything else that keeps time
     if (game.phase === 'attract') game.attract.t++;
-    if (livePhases.includes(game.phase)) game.update();
+    /* The manual opened during READY holds the count too. openHelp only
+       freezes live play, and READY is not live -- so the round used to
+       start underneath a player who was still reading. */
+    const reading = game.helpOpen && game.phase === 'ready';
+    if (livePhases.includes(game.phase) && !reading) game.update();
     else if (game.phase === 'attract' && game.demo) {
       game.phase = 'play'; game.update();
       if (game.phase === 'play' || game.phase === 'command') game.phase = 'attract';
@@ -3906,12 +4409,14 @@ function frame(now) {
     game.popups = game.popups.filter(p => --p.t > 0);
     if (game.shakeT > 0) game.shakeT--;
   }
+  drillCheck();
 
   render();
 }
 
 function render() {
   hotFrame = null; hotFrameOpen = true;
+  tipTick();   // before the board, which leaves GRAB A GHOST to a toast that is up
   const g = nativeCtx;
   g.fillStyle = PAL.black;
   g.fillRect(0, 0, NATIVE_W, NATIVE_H);
@@ -3948,6 +4453,7 @@ function render() {
   sctx.drawImage(vignette, 0, 0);
   /* END CRT PASS */
 
+  drawFrozenBoard(sctx, sx, sy);   // frozen: the board lifts off the glass
   drawOrderLayer(sctx, sx, sy);
 
   /* The board is what the player is actually reading, so it wins: after the
@@ -3957,7 +4463,7 @@ function render() {
       || (game.phase === 'attract' && game.demo)) {
     const ds = dotScratch.getContext('2d');
     ds.clearRect(0, 0, NATIVE_W, NATIVE_H);
-    splitBank(ds, dim => drawDots(ds, dim ? PAL.dotDim : PAL.dot));
+    splitBank(ds, frozen => { if (!frozen) drawDots(ds, PAL.dot); });
     if (game.fruit) {
       ds.drawImage(SPRITES.fruit[game.fruit.idx % SPRITES.fruit.length],
         DEN_EXIT_X - 8, tcy(FRUIT_TILE.r) - 8 + HUD_TOP * TILE);
@@ -3968,20 +4474,32 @@ function render() {
         if (game.phase !== 'command' || h.state === 'dissolving') h.draw(ds, game);
       });
     }
+    /* Frozen, the lifted board's black would bury anything left in the
+       framebuffer, so what has no art up here -- a fruit, a ghost
+       dissolving, a score popup -- comes back over it from the scratch. */
+    if (game.phase === 'command') drawPopups(ds);
     /* The lifted cast throws its shadows here, under the pellets about to
        come back: a shadow drawn with the actors would land on the food
-       around them, and the glass must never hide the board. */
-    if (game.phase === 'command') drawContactShadows(sctx, sx, sy);
+       around them, and the glass must never hide the board. Frozen, the
+       food comes back round, on the glass, straight after. */
+    if (game.phase === 'command') {
+      drawContactShadows(sctx, sx, sy);
+      drawFrozenDots(sctx, sx, sy);
+    }
     /* The command layer ran in between and is allowed to smooth. A leak
        from in there would resample the pellets on the way back up, and the
        palette lock cannot see inside the layer to catch it -- so say it
        again here, where it counts. */
     sctx.imageSmoothingEnabled = false;
     sctx.drawImage(dotScratch, sx, sy, NATIVE_W * scale, NATIVE_H * scale);
+    drawFrozenMarks(sctx, sx, sy);   // the brackets and the '!', crisp
+    drawFrozenFurniture(sctx, sx, sy);   // roster and pill, over the marks
     drawLiftedCast(sctx, sx, sy);   // frozen, the cast rides on the glass
   }
 
   drawGlassOver(sctx, sx, sy);   // readouts that must never be punched through
+  drawCoachLayer(sctx);   // the practice's card, over the board and under the manual
+  drawTipLayer(sctx);    // a real game's one-time toasts, and the game-over chip
   drawHelpLayer(sctx);   // the ? chip and its manual float above everything
   listenForPincer();
   syncShell();
@@ -3996,31 +4514,53 @@ function render() {
    the most legible text a phone has because it is real type. The DOM is
    touched only when that state changes, and never read back. Every access
    is fenced: the page can be missing pieces (the test harness has no body
-   at all), and a shell that cannot be lit must never cost a frame. */
+   at all), and a shell that cannot be lit must never cost a frame.
+   During the practice the live line is the coach card's lead, frozen or
+   not, and body.coaching keeps it up in live play too, a size up and in
+   the card's sentence case: the card is canvas type, and this is the
+   same sentence in the page's own. */
 const shell = { key: null };
 function syncShell() {
   const frozen = game.phase === 'command';
+  const coaching = !!game.drill;
   const stalled = frozen ? stalledHunter() : null;
   const sel = frozen ? game.hunters[Draw.selected] : null;
   const verb = touchMode ? 'TAP' : 'CLICK';
   /* Nothing leaves the den on its own any more, so holding a ghost that
      is sitting in there says the one thing a new player cannot guess. */
   const denSel = sel && !sel.path && (sel.state === 'idle' || sel.state === 'respawn');
-  const line = stalled ? stalled.def.name + ' NEEDS ORDERS'
+  let line = stalled ? stalled.def.name + ' NEEDS ORDERS'
     : denSel ? sel.def.name + ' WAITS IN THE DEN · DRAG IT OUT'
     : 'DRAG A GHOST · ' + verb + ' EMPTY MAZE TO RUN';
-  const key = frozen + '|' + !!stalled + '|' + (sel ? sel.color : '') + '|' + line;
+  if (coaching) {
+    /* the sheet's head is a label on the glass, and a sentence down here;
+       the hero card's instruction is its body, so the line says both */
+    const c = drillCopy();
+    line = c.head ? c.head.charAt(0) + c.head.slice(1).toLowerCase() + ' ' + c.lead
+      : coachHero() ? c.lead + ' ' + c.caption : c.lead;
+  }
+  const key = frozen + '|' + !!stalled + '|' + (sel ? sel.color : '') + '|' + coaching + '|' + line;
   if (key === shell.key) return;
   shell.key = key;
   try {
     const body = document.body;
     body.classList.toggle('frozen', frozen);
     body.classList.toggle('blocked', !!stalled);
+    body.classList.toggle('coaching', coaching);
     // the room keeps the last ghost's color on the way out, so the light
     // fades rather than flashing to a default first
     if (sel) body.style.setProperty('--accent', sel.color);
     const live = document.getElementById('hint-live');
-    if (live && frozen) live.textContent = line;
+    if (live && (frozen || coaching)) live.textContent = line;
+    /* The page greeted a first visit with "a practice comes first". Once
+       one has run, that is no longer true of anything on screen, so the
+       resting line goes back to the returning player's -- swapped as the
+       real game starts, while nobody is mid-drag for the slot to move. */
+    const idle = document.getElementById('hint-idle');
+    if (!coaching && coachFx.startedAt > -1e9 && idle && idle.dataset && idle.dataset.after) {
+      idle.innerHTML = idle.dataset.after;
+      delete idle.dataset.after;
+    }
   } catch (e) {}
 }
 
@@ -4036,9 +4576,19 @@ function pointerTarget() {
   const d = { x: input.dx, y: input.dy };
   const px = d.x / scale, py = d.y / scale - HUD_TOP * TILE;
   const hand = (hover) => ({ cursor: 'pointer', hover });
-  if (game.helpOpen) return inRect(d, helpUI.close) ? hand('close') : { cursor: 'crosshair', hover: null };
+  if (game.helpOpen) {
+    if (inRect(d, helpUI.practice)) return hand('practice');
+    return inRect(d, helpUI.close) ? hand('close') : { cursor: 'crosshair', hover: null };
+  }
   if (Draw.active) return { cursor: 'grabbing', hover: null };
   if (inRect(d, helpUI.btn)) return hand('help');
+  if (game.phase === 'gameover' && inRect(d, gameOverUI.practice)) return hand('retry');
+  if (game.drill) {
+    // graduation: the whole glass is the button
+    if (game.drill.step === 'graduate') return hand(inRect(d, coachUI.play) ? 'grad' : null);
+    if (inRect(d, coachUI.skip)) return hand('skip');
+    if (cardHolds(d, px, py)) return { cursor: 'default', hover: null };
+  }
   if (game.phase === 'command') {
     if (inRect(d, rosterUI.play)) return hand('play');
     if (inRect(d, rosterUI.camp)) return hand('camp');
@@ -4078,6 +4628,7 @@ function syncCursor() {
 const TOKENS = {
   ink:   '#ffffff',              // primary text
   muted: '#8fa0c0',              // secondary text, labels
+  body:  '#c0cae2',              // a sentence to be read: 8.8:1 on the glass over white, 12:1 over black
   glass: 'rgba(8,12,28,0.88)',   // control fill
   line:  '#5878ff',              // hairlines and rims
   ok:    '#40ff88',              // ready, go
@@ -4089,7 +4640,6 @@ const TOKENS = {
   specular: 'rgba(255,255,255,0.16)', // the hairline where light catches glass
   shadow:  'rgba(0,0,6,0.7)',    // what a floating card casts
   casing:  '#00000a',            // the dark edge a route is laid on, map-style
-  flare:   '#b8c8ff',            // a survey cross as the freeze wave passes it
   wave:    '#c8dcff',            // the freeze wave's ring at its brightest
   waveClear: 'rgba(200,220,255,0)',  // ...and either side of it
   hover:   'rgba(255,255,255,0.08)',  // a control under a resting mouse
@@ -4118,6 +4668,18 @@ const TYPE_ROLES = {
   caption: { k: 3.6, floor: 10.5, weight: 500, family: UI_SANS },  // status, labels
   figure:  { k: 3.6, floor: 10.5, weight: 600, family: UI_MONO },  // small numbers
   micro:   { k: 3.2, floor: 9,    weight: 500, family: UI_SANS },  // hints only
+  /* The practice's own voice. Its sentences are read while the player is
+     doing something else, so they are set a size up from the rules, and
+     never at a label's floor: 16 and 14 CSS px on the smallest glass,
+     growing with the scale from there. */
+  coachLead: { k: 5,   floor: 16, weight: 600, family: UI_SANS },  // what to do now
+  coachBody: { k: 4.4, floor: 14, weight: 500, family: UI_SANS },  // ...and why, or where
+  /* The first instruction, front and centre: the practice's opening card
+     and a first real game's toast, over the den, read before the hand
+     knows where anything is. Lead and body both a good size up, so the
+     one thing to do is the biggest thing on the glass. */
+  heroLead: { k: 7,   floor: 22, weight: 600, family: UI_SANS },
+  heroBody: { k: 5.2, floor: 16, weight: 500, family: UI_SANS },
 };
 let uiDpr = 1;
 let TYPE = {};
@@ -4372,18 +4934,51 @@ function reducedMotion() {
   } catch (e) { return false; }
 }
 
+/* Tile centres in display space, split into runs at tunnel seams. A run
+   that leaves through a tunnel mouth is carried on to the edge of the
+   playfield it exits by, and the run on the far side starts from the edge
+   it comes in at, on the same row: the line visibly goes into one mouth
+   and out of the other, instead of stopping a half-tile short of each and
+   leaving a lone tile centre -- no line, no arrowhead -- on the far side
+   of a route that has only just crossed. The stubs are drawing only;
+   every timing on the route still counts in tiles. */
 function orderPathPoints(tiles, closed, S, ox, oy) {
-  // tile centres in display space, split into runs at tunnel seams
   const runs = [];
   let cur = [];
   const list = closed && tiles.length ? tiles.concat([tiles[0]]) : tiles;
+  const at = (x, r) => ({ x: x * S + ox, y: (tcy(r) + HUD_TOP * TILE) * S + oy });
   for (let i = 0; i < list.length; i++) {
     const t = list[i];
-    if (i > 0 && Math.abs(t.c - list[i - 1].c) > 1) { runs.push(cur); cur = []; }
-    cur.push({ x: (tcx(t.c)) * S + ox, y: (tcy(t.r) + HUD_TOP * TILE) * S + oy });
+    const prev = i > 0 ? list[i - 1] : null;
+    if (prev && Math.abs(t.c - prev.c) > 1) {
+      // leaving col 27 rightward exits on the right; col 0 leftward, on the left
+      const outX = prev.c > t.c ? NATIVE_W : 0;
+      cur.push(at(outX, prev.r));
+      runs.push(cur);
+      cur = [at(NATIVE_W - outX, t.r)];
+    }
+    cur.push(at(tcx(t.c), t.r));
   }
   if (cur.length) runs.push(cur);
   return runs;
+}
+
+/* Where an open route's arrowhead goes and which way it points: at its
+   last tile, along the last stretch of line. Null when the route is a
+   lone tile with no line to point along. */
+function routeArrow(runs) {
+  const last = runs[runs.length - 1];
+  if (!last || last.length < 2) return null;
+  const a = last[last.length - 2], b = last[last.length - 1];
+  return { x: b.x, y: b.y, ang: Math.atan2(b.y - a.y, b.x - a.x) };
+}
+
+/* The arrowhead a route from routeOrder carries, if it carries one: a
+   patrol has its ring and a route home its den instead. The order layer
+   draws it from here and the frozen food leaves room for it from here,
+   so the two can never disagree about where the heads are. */
+function orderArrow(o) {
+  return !o.closed && !o.home ? routeArrow(o.runs) : null;
 }
 
 function strokeRuns(ctx, runs, width, color, alpha, dashOffset, op) {
@@ -4595,98 +5190,350 @@ function readyMark(ctx, x, y, S, color) {
   ctx.restore();
 }
 
+/* ---- the frozen board ----
+   Frozen, the whole board lifts off the glass the way the cast does: the
+   walls, the pellets and the energizers are redrawn at display resolution
+   in here, on a pure black field, with no scanlines, bloom or vignette
+   over them. Every wall block is a solid shape -- a deep shade of the
+   board's colour, a faint rim inside it and a crisp lit edge, with softly
+   rounded corners -- traced from the same tile maze the pixel walls come
+   from, so the corridors, the den and its door are exactly where they are
+   in live play. Outside the maze counts as open, so the frame is a block
+   like any other, floating, lit on both sides, and a tunnel mouth ends it
+   in two rounded caps. Live play never sees any of this: the 1981 board
+   comes back the instant time runs. It arrives on the same raster split
+   as everything else frozen (bankBand), so the black opens from the row
+   that stopped time and the pixels go with it, row for row. */
+const FB_INSET = 1.25;   // native px each block stands back from its corridor
+const FB_R_OUT = 2.6;    // a block's own corners
+const FB_R_IN = 1.6;     // a corridor's corners (the block's inside bends)
+const FB_EDGE = 0.75;    // the lit edge, native px, laid inside the block
+const FB_DOT_R = 1.15;   // a pellet: the 2x2 square's area, as a disc
+const FB_POWER_R = 3.3;  // an energizer
+const FB_COLLAR = 0.7;   // the black ring a pellet is cut out of a route with
+/* The walls and the energizer, baked once per board and scale. setBoard
+   and layout() empty it; the key is the belt to their braces. */
+const frozenCache = { key: null, walls: null, power: null };
+
+function frozenBoardOn() { return game.phase === 'command'; }
+
+/* The wall blocks as closed loops of tile corners, solid on the right of
+   every edge (the glass's y runs down, so a block's outline goes round
+   clockwise on screen, and anything it encloses that is open goes round
+   the other way). Each corner keeps the headings in and out of it. */
+function frozenWallLoops() {
+  const solid = (c, r) => inBounds(c, r) && solidAt(c, r);
+  const out = new Map();   // "x,y" -> edges leaving that corner
+  const add = (x0, y0, x1, y1) => {
+    const k = x0 + ',' + y0;
+    if (!out.has(k)) out.set(k, []);
+    out.get(k).push({ x0, y0, x1, y1, dx: x1 - x0, dy: y1 - y0, used: false });
+  };
+  for (let r = 0; r < MAZE_ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (!solid(c, r)) continue;
+      if (!solid(c, r - 1)) add(c, r, c + 1, r);
+      if (!solid(c + 1, r)) add(c + 1, r, c + 1, r + 1);
+      if (!solid(c, r + 1)) add(c + 1, r + 1, c, r + 1);
+      if (!solid(c - 1, r)) add(c, r + 1, c, r);
+    }
+  }
+  const loops = [];
+  out.forEach(list => list.forEach(start => {
+    if (start.used) return;
+    const pts = [];
+    let e = start;
+    while (e && !e.used) {
+      e.used = true;
+      pts.push({ x: e.x0, y: e.y0, dx: e.dx, dy: e.dy });
+      const cur = e;
+      const cross = n => cur.dx * n.dy - cur.dy * n.dx;
+      // a pinch where two blocks touch corner to corner: turn right, so each
+      // block keeps its own corner instead of the two fusing through it
+      const next = (out.get(e.x1 + ',' + e.y1) || []).filter(n => !n.used)
+        .sort((a, b) => cross(b) - cross(a));
+      e = next[0];
+    }
+    // keep only the corners: drop every point where the heading carries on
+    const corners = [];
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i], q = pts[(i - 1 + pts.length) % pts.length];
+      if (p.dx !== q.dx || p.dy !== q.dy) {
+        corners.push({ x: p.x, y: p.y, inX: q.dx, inY: q.dy, outX: p.dx, outY: p.dy });
+      }
+    }
+    if (corners.length >= 4) loops.push(corners);
+  }));
+  return loops;
+}
+
+/* One path for every block, in native px: each edge stood back FB_INSET
+   into its block, each corner rounded -- a block's own corners at FB_R_OUT,
+   the corridor's at FB_R_IN. Anything open a block encloses winds the
+   other way, so a nonzero fill leaves it open. */
+function frozenWallPath() {
+  const p = new Path2D();
+  frozenWallLoops().forEach(loop => {
+    const P = loop.map(v => ({
+      x: v.x * TILE + FB_INSET * (-v.inY - v.outY),
+      y: v.y * TILE + FB_INSET * (v.inX + v.outX),
+      r: (v.inX * v.outY - v.inY * v.outX) > 0 ? FB_R_OUT : FB_R_IN,
+    }));
+    const n = P.length, a = P[n - 1], b = P[0];
+    p.moveTo((a.x + b.x) / 2, (a.y + b.y) / 2);
+    for (let i = 0; i < n; i++) {
+      const cur = P[i], nxt = P[(i + 1) % n];
+      p.arcTo(cur.x, cur.y, nxt.x, nxt.y, cur.r);
+    }
+    p.closePath();
+  });
+  return p;
+}
+
+// a palette entry at alpha a, for the glass
+function hexAlpha(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + (n >> 16 & 255) + ',' + (n >> 8 & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+
+/* The bake, at scale S: the walls and the door on a canvas the size of the
+   maze on the glass, and one energizer -- a steady disc with a small warm
+   glow -- to be stamped where each one is. */
+function frozenBake() {
+  const S = scale;
+  const key = boardIdx + '|' + S;
+  if (frozenCache.key === key) return frozenCache;
+  const cv = makeCanvas(NATIVE_W * S, MAZE_ROWS * TILE * S);
+  const g = cv.getContext('2d');
+  const col = BOARDS[boardIdx].wall;
+  const path = frozenWallPath();
+  g.setTransform(S, 0, 0, S, 0, 0);
+  // the door first, seated under the ends of the den wall
+  const dy = DOOR_ROW * TILE + TILE / 2;
+  g.lineCap = 'round';
+  g.strokeStyle = PAL.door;
+  g.lineWidth = 1.6;
+  g.beginPath();
+  g.moveTo(DOOR_C0 * TILE - FB_INSET, dy);
+  g.lineTo((DOOR_C1 + 1) * TILE + FB_INSET, dy);
+  g.stroke();
+  // the body: a deep shade of the board colour, flat
+  g.fillStyle = shadeMix(col, -0.7);
+  g.fill(path);
+  g.save();
+  g.clip(path);
+  // a soft inner rim just inside the edge, so the block reads as raised
+  g.strokeStyle = hexAlpha(col, 0.22);
+  g.lineWidth = FB_EDGE * 2 + 2.4;
+  g.stroke(path);
+  // the lit edge, entirely inside the block so the corridor stays clean
+  g.strokeStyle = shadeMix(col, 0.22);
+  g.lineWidth = FB_EDGE * 2;
+  g.stroke(path);
+  g.restore();
+
+  const R = FB_POWER_R * S, G = R * 2.4, w = Math.ceil(G * 2) + 2;
+  const pw = makeCanvas(w, w);
+  const pg = pw.getContext('2d');
+  const m = w / 2;
+  const glow = pg.createRadialGradient(m, m, R * 0.8, m, m, G);
+  glow.addColorStop(0, hexAlpha(PAL.dot, 0.28));
+  glow.addColorStop(1, hexAlpha(PAL.dot, 0));
+  pg.fillStyle = glow;
+  pg.beginPath(); pg.arc(m, m, G, 0, Math.PI * 2); pg.fill();
+  pg.fillStyle = PAL.dot;
+  pg.beginPath(); pg.arc(m, m, R, 0, Math.PI * 2); pg.fill();
+
+  frozenCache.key = key; frozenCache.walls = cv; frozenCache.power = pw;
+  return frozenCache;
+}
+
+/* Where the frozen board is showing this frame, in display px: the whole
+   maze, or while the freeze is arriving, the band of rows it has reached. */
+function frozenClip(ctx, ox, oy) {
+  const S = scale, band = bankBand();
+  const lo = band ? band.lo : 0, hi = band ? band.hi : MAZE_ROWS;
+  ctx.beginPath();
+  ctx.rect(ox - S * TILE, (lo + HUD_TOP) * TILE * S + oy,
+    (NATIVE_W + 2 * TILE) * S, (hi - lo) * TILE * S);
+  ctx.clip();
+}
+
+/* The field and the walls: laid over the CRT-passed frame, under the
+   orders. Pure black, so nothing of the glass is left over the board.
+   One fill and one blit. */
+function drawFrozenBoard(ctx, ox, oy) {
+  if (!frozenBoardOn()) return;
+  const S = scale;
+  const bake = frozenBake();
+  ctx.save();
+  frozenClip(ctx, ox, oy);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = PAL.black;
+  ctx.fillRect(0, HUD_TOP * TILE * S + oy, screenCanvas.width, MAZE_ROWS * TILE * S);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(bake.walls, ox, HUD_TOP * TILE * S + oy);
+  ctx.restore();
+}
+
+/* The food, punched back over the orders as round discs. Time is stopped,
+   so the energizers hold still instead of blinking, each with its warm
+   glow so it still outranks the pellet field. A thin black collar under
+   every disc cuts it cleanly out of a route drawn across it. Two fills
+   for the whole field, and a stamp per energizer.
+   Except under an arrowhead. The collar is wider than the arrowhead is
+   deep, so a route whose tip stopped on a pellet -- most of them, and
+   every one dragged on along the far side of a tunnel -- had its head cut
+   out to a sliver: nothing to read and nothing to grab. The tip's pellet
+   keeps its disc, sitting in the arrowhead the way the 2x2 pellet always
+   did, and loses only its collar. Returns the tips it spared, for the
+   tests. */
+function drawFrozenDots(ctx, ox, oy) {
+  if (!frozenBoardOn()) return null;
+  const S = scale, yOff = HUD_TOP * TILE;
+  const bake = frozenBake();
+  const tips = new Set();
+  routeOrder(S, ox, oy).forEach(o => {
+    if (!orderArrow(o)) return;
+    const t = o.tiles[o.tiles.length - 1];
+    tips.add(t.r * COLS + t.c);
+  });
+  ctx.save();
+  frozenClip(ctx, ox, oy);
+  ctx.globalCompositeOperation = 'source-over';
+  const pel = new Path2D(), collar = new Path2D(), pow = [];
+  const rp = FB_DOT_R * S, rc = rp + S * FB_COLLAR, rpc = (FB_POWER_R + 0.9) * S;
+  for (let r = 0; r < MAZE_ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const d = dots[r][c];
+      if (!d) continue;
+      const x = tcx(c) * S + ox, y = (tcy(r) + yOff) * S + oy;
+      if (d === 1) {
+        if (!tips.has(r * COLS + c)) { collar.moveTo(x + rc, y); collar.arc(x, y, rc, 0, Math.PI * 2); }
+        pel.moveTo(x + rp, y); pel.arc(x, y, rp, 0, Math.PI * 2);
+      } else {
+        collar.moveTo(x + rpc, y); collar.arc(x, y, rpc, 0, Math.PI * 2);
+        pow.push(x, y);
+      }
+    }
+  }
+  ctx.globalAlpha = 0.85;
+  ctx.fillStyle = PAL.black;
+  ctx.fill(collar);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = PAL.dot;
+  ctx.fill(pel);
+  const half = bake.power.width / 2;
+  for (let i = 0; i < pow.length; i += 2) {
+    ctx.drawImage(bake.power, Math.round(pow[i] - half), Math.round(pow[i + 1] - half));
+  }
+  ctx.restore();
+  return tips;
+}
+
+/* The two marks the pixel board used to put round a ghost, as clean
+   strokes over the lifted board, in the same places and on the same
+   cadence. Brackets mark the SELECTED ghost only, corners only so the
+   ghost stays readable, and hold steady: when all four blinked at once,
+   "selected" was invisible on the board. The blink is kept for the '!'
+   over a ghost standing still with no orders (a ghost waiting in the den
+   is not camping: waiting there is legal). Returns what it drew, for the
+   tests. */
+function drawFrozenMarks(ctx, ox, oy) {
+  if (!frozenBoardOn()) return null;
+  const S = scale;
+  const at = h => ({ x: h.x * S + ox, y: (h.y + HUD_TOP * TILE) * S + oy });
+  const drawn = { brackets: null, alerts: [] };
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const sel = game.hunters[Draw.selected];
+  if (sel && sel.isCommandable() && !Draw.active) {
+    const p = at(sel), e = 8.6 * S, arm = 3 * S;
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = PAL.white;
+    ctx.lineWidth = Math.max(1.5, S * 0.7);
+    ctx.beginPath();
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        const x = p.x + sx * e, y = p.y + sy * e;
+        ctx.moveTo(x - sx * arm, y); ctx.lineTo(x, y); ctx.lineTo(x, y - sy * arm);
+      }
+    }
+    ctx.stroke();
+    drawn.brackets = p;
+  }
+  if ((uiFrame / 20 | 0) % 2 === 0) {
+    game.hunters.forEach(h => {
+      if (!h.isCommandable() || h.state !== 'active' || h.path || h.dir) return;
+      /* The ghost's own ORDERS? popup is spawned right where this mark
+         goes, and a '!' stamped into it reads R!ZE. The words already say
+         it; the mark waits until they have drifted clear. */
+      const nx = h.x, ny = h.y + HUD_TOP * TILE;
+      if (game.popups.some(pp => {
+        const b = popupBox(pp);
+        return nx + 2 > b.x && nx - 2 < b.x + b.w && ny - 9 > b.y && ny - 16 < b.y + b.h;
+      })) return;
+      const p = at(h);
+      const top = p.y - 15.2 * S, foot = p.y - 12 * S, dot = p.y - 9.4 * S;
+      const mark = (w, color) => {
+        ctx.strokeStyle = color; ctx.fillStyle = color;
+        ctx.lineWidth = w;
+        ctx.beginPath(); ctx.moveTo(p.x, top); ctx.lineTo(p.x, foot); ctx.stroke();
+        ctx.beginPath(); ctx.arc(p.x, dot, w / 2, 0, Math.PI * 2); ctx.fill();
+      };
+      ctx.globalAlpha = 0.7;
+      mark(S * 2.9, TOKENS.casing);
+      ctx.globalAlpha = 1;
+      mark(S * 1.7, PAL.white);
+      drawn.alerts.push(p);
+    });
+  }
+  ctx.restore();
+  return drawn;
+}
+
 /* ---- the freeze wave ----
    Stopping time is something that happened somewhere -- under your finger,
    at the ghost you grabbed, at the ghost that ran out of orders, at the ?
-   chip -- so the glass acknowledges it from there. One soft ring runs out
-   from that point to the far corner of the glass, and the survey grid is
-   laid down in its wake, each cross catching the light for a moment as
-   the front goes over it. The flare is a function of distance, so the
-   crosses are sorted into a few alpha bands and stroked once per band, not
-   tracked one by one. Everything here is under the orders and under the
-   punched-back board, and once the front has passed, the grid is exactly
-   the static grid it always was. A refreeze or reduced motion skips it. */
+   chip -- so the glass acknowledges it from there: one soft ring runs out
+   from that point to the far corner of the glass, fading as it spreads,
+   while the lifted board opens behind it from the same row. It is over
+   the board and under everything that is read on it. A refreeze or
+   reduced motion skips it. */
 const WAVE_TICKS = 16;                  // the ring reaches the far corner
-const WAVE_FLARE = 4;                   // ticks a cross stays lit behind it
-const WAVE_BANDS = [0.62, 0.46, 0.32];  // flare alphas, freshest first
-const GRID_ALPHA = 0.22;
 const WAVE_ALPHA = 0.35;
 function waveReach(t) {                 // 0..1 of the way out, decelerating
   const k = Math.min(1, Math.max(0, t) / WAVE_TICKS);
   return 1 - (1 - k) * (1 - k) * (1 - k);
 }
-/* Returns the band each open cross is stroked in this frame (0 settled,
-   1.. flaring, -1 not yet uncovered), for the tests; drawing is the point. */
-function surveyWave(S, ox, oy) {
+/* Where the ring is this frame, in display px: its centre, how far it has
+   got (R) and how far it has to go (far). Returns it for the tests;
+   drawing is the point. */
+function freezeWave(S, ox, oy) {
   const t = fxT();
-  const moving = !fx.skipEnter && !reducedMotion() && t < WAVE_TICKS + WAVE_FLARE;
+  const moving = !fx.skipEnter && !reducedMotion() && t < WAVE_TICKS;
   const cx = fx.origin.x * S + ox, cy = (fx.origin.y + HUD_TOP * TILE) * S + oy;
   const far = Math.hypot(Math.max(cx, NATIVE_W * S - cx), Math.max(cy, NATIVE_H * S - cy));
   const R = moving ? far * waveReach(t) : Infinity;
-  const pts = [], bands = [];
-  for (let r = 0; r < MAZE_ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      if (!isOpen(c, r) || inDen(c, r)) continue;
-      const x = tcx(c) * S + ox, y = (tcy(r) + HUD_TOP * TILE) * S + oy;
-      let band = 0;
-      if (moving) {
-        const d = Math.hypot(x - cx, y - cy);
-        if (d > R) band = -1;            // the front has not got here yet
-        else {
-          // when the front crossed this distance: waveReach, inverted
-          const age = t - WAVE_TICKS * (1 - Math.cbrt(1 - Math.min(1, d / far)));
-          if (age < WAVE_FLARE) {
-            band = 1 + Math.min(WAVE_BANDS.length - 1,
-              Math.floor(Math.max(0, age) / WAVE_FLARE * WAVE_BANDS.length));
-          }
-        }
-      }
-      pts.push(x, y); bands.push(band);
-    }
-  }
-  return { moving, cx, cy, far, R, pts, bands };
+  return { moving, cx, cy, far, R };
 }
-function drawSurveyGrid(ctx, ox, oy) {
+function drawFreezeWave(ctx, ox, oy) {
+  const wv = freezeWave(scale, ox, oy);
+  if (!wv.moving || wv.R >= wv.far) return;
+  // one soft band just inside the front, gone by the time it has covered the glass
   const S = scale;
-  const wv = surveyWave(S, ox, oy);
-  const open = wv.moving && wv.R < wv.far;   // the ring is still on the glass
-  const k = S * 0.9;
+  const inner = Math.max(0, wv.R - 4 * S), outer = wv.R + S;
+  const g = ctx.createRadialGradient(wv.cx, wv.cy, inner, wv.cx, wv.cy, outer);
+  g.addColorStop(0, TOKENS.waveClear);
+  g.addColorStop(0.7, TOKENS.wave);
+  g.addColorStop(1, TOKENS.waveClear);
   ctx.save();
-  if (open) {
-    // the front edge trims the arms of the crosses it is still uncovering
-    ctx.beginPath(); ctx.arc(wv.cx, wv.cy, wv.R, 0, Math.PI * 2); ctx.clip();
-  }
-  ctx.lineWidth = Math.max(1, S * 0.16);
-  for (let band = 0; band <= WAVE_BANDS.length; band++) {
-    let any = false;
-    ctx.beginPath();
-    for (let j = 0; j < wv.bands.length; j++) {
-      if (wv.bands[j] !== band) continue;
-      const x = wv.pts[2 * j], y = wv.pts[2 * j + 1];
-      ctx.moveTo(x - k, y); ctx.lineTo(x + k, y);
-      ctx.moveTo(x, y - k); ctx.lineTo(x, y + k);
-      any = true;
-    }
-    if (!any) continue;
-    ctx.globalAlpha = band ? WAVE_BANDS[band - 1] : GRID_ALPHA;
-    ctx.strokeStyle = band ? TOKENS.flare : TOKENS.line;
-    ctx.stroke();
-  }
+  ctx.globalAlpha = WAVE_ALPHA * (1 - wv.R / wv.far);
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(wv.cx, wv.cy, outer, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
-  if (open) {
-    // the ring itself: one soft band just inside the front, fading as it
-    // spreads, and gone by the time it has covered the glass
-    const inner = Math.max(0, wv.R - 4 * S), outer = wv.R + S;
-    const g = ctx.createRadialGradient(wv.cx, wv.cy, inner, wv.cx, wv.cy, outer);
-    g.addColorStop(0, TOKENS.waveClear);
-    g.addColorStop(0.7, TOKENS.wave);
-    g.addColorStop(1, TOKENS.waveClear);
-    ctx.save();
-    ctx.globalAlpha = WAVE_ALPHA * (1 - wv.R / wv.far);
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(wv.cx, wv.cy, outer, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
-  }
 }
 
 /* ---- contact shadows ----
@@ -4722,13 +5569,15 @@ function bakeShadows() {
 
 /* A new scale, from layout(): everything on the glass that was baked or
    remembered in display px is now the wrong size. The shadows are baked
-   again, and the two things that ease from where they were last drawn --
+   again, the lifted board is dropped to be baked at its next frozen
+   frame, and the two things that ease from where they were last drawn --
    the pill's width, the drag tag's place -- forget it and snap, rather
    than spring from a size that no longer exists (a pill springing up
    from two-thirds its width clips its own words on the way). */
 function rescaleGlass() {
   bakeShadows();
   plateShadows.clear();
+  frozenCache.key = null;
   pillAnim.at = -Infinity;   // older than any freeze: the next draw snaps
   tagAnim.on = false;
 }
@@ -4868,7 +5717,7 @@ function homeMark(ctx, p, S, color, bright, frozen) {
 function drawOrderLayer(ctx, ox, oy) {
   /* The attract demo also shows the orders -- the arrows converging on him
      are the pitch -- but at live-play brightness only: frozen stays gated on
-     command, so the survey grid, the hi-res cast and the roster never leak
+     command, so the lifted board, the hi-res cast and the roster never leak
      onto the attract screen. */
   const demoLive = game.phase === 'attract' && game.demo;
   const showing = game.phase === 'command' || game.phase === 'play' || demoLive;
@@ -4880,7 +5729,7 @@ function drawOrderLayer(ctx, ox, oy) {
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
 
-  if (frozen) drawSurveyGrid(ctx, ox, oy);
+  if (frozen) drawFreezeWave(ctx, ox, oy);
 
   const hot = hotBeadsNow();
   const spacing = Math.max(2, game.params.hunterSpeed * BEAD_TICKS);
@@ -4922,7 +5771,8 @@ function drawOrderLayer(ctx, ox, oy) {
      after every casing, so a later route's dark edge can never swallow an
      earlier route's white pincer bead -- the one mark that says two
      ghosts will be in the same place at the same time. */
-  order.forEach(({ h, i, drawing, closed, home, walk, runs }) => {
+  order.forEach(o => {
+    const { h, i, drawing, closed, home, walk, runs } = o;
     // leading edge: a bright head that runs along the route
     if (frozen && runs.length) {
       const total = (walk.length - 1) * TILE;
@@ -4969,18 +5819,20 @@ function drawOrderLayer(ctx, ox, oy) {
       ctx.restore();
     }
 
-    // arrowhead on an open route, a den on a route home, or a closed-circuit ring
+    /* Arrowhead on an open route, a den on a route home, or a closed-circuit
+       ring. A tip that has only just come out of a tunnel still gets its
+       arrowhead, on the far side, on a half-tile stem from the screen edge:
+       that is where the route now ends, and where it is picked up again. */
     const last = runs[runs.length - 1];
+    const arrow = orderArrow(o);
     if (home && last && last.length >= 1) {
       homeMark(ctx, last[last.length - 1], S, h.color, bright, frozen);
-    } else if (!closed && last && last.length >= 2) {
-      const a = last[last.length - 2], b = last[last.length - 1];
-      const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    } else if (arrow) {
       const len = S * 2.6;
       ctx.save();
       ctx.globalAlpha = bright;
       ctx.fillStyle = h.color;
-      ctx.translate(b.x, b.y); ctx.rotate(ang);
+      ctx.translate(arrow.x, arrow.y); ctx.rotate(arrow.ang);
       ctx.beginPath();
       ctx.moveTo(len, 0);
       ctx.lineTo(-len * 0.55, len * 0.7);
@@ -5016,17 +5868,26 @@ function drawOrderLayer(ctx, ox, oy) {
 
   ctx.restore();
 
-  /* The glass furniture. Frozen, it is live and hit-testable; for a few
-     ticks after a thaw it is only a picture of itself dropping away over
-     play that is already running -- pressDown reads no roster outside
-     command, so a click in that window freezes exactly as it always has. */
-  if (frozen) {
-    drawRoster(ctx, ox, oy, false);
-    drawStatusPill(ctx, ox, oy, false);
-  } else if (game.phase === 'play' && fxThawT() < FX_EXIT) {
+  /* The glass furniture dropping away. For a few ticks after a thaw it is
+     only a picture of itself over play that is already running -- pressDown
+     reads no roster outside command, so a click in that window freezes
+     exactly as it always has. Frozen, it is drawn later, from render(), by
+     drawFrozenFurniture. */
+  if (!frozen && game.phase === 'play' && fxThawT() < FX_EXIT) {
     drawRoster(ctx, ox, oy, true);
     drawStatusPill(ctx, ox, oy, true);
   }
+}
+
+/* The glass furniture while time is stopped: live and hit-testable. It is
+   drawn after the crisp marks round the ghosts, so the roster, the camp
+   chip and the status pill still cover a '!' or a bracket that reaches
+   them, exactly as they covered the pixel marks in the framebuffer, and
+   before the lifted cast, which has always ridden over everything. */
+function drawFrozenFurniture(ctx, ox, oy) {
+  if (game.phase !== 'command') return;
+  drawRoster(ctx, ox, oy, false);
+  drawStatusPill(ctx, ox, oy, false);
 }
 
 /* The roster. Four ghosts can end up standing on the same tile, and then a
@@ -5036,6 +5897,12 @@ function drawOrderLayer(ctx, ox, oy) {
    Rects are stored each frame for the mousedown hit test, and always where
    the card comes to rest: the cards move, the targets never do. */
 const rosterUI = { slots: [], play: null, camp: null };
+/* Where the roster's plates come to rest, in display px: the bottom of
+   the glass less a card and a margin. Anything that docks above the
+   roster reads it from here, so it can never drift from the real thing. */
+function rosterTop() {
+  return NATIVE_H * scale - scale * 13 - scale * 1.5;
+}
 
 function plate(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -5318,7 +6185,7 @@ function drawRoster(ctx, ox, oy, leaving) {
   const playW = S * 20;
   const total = slotW * 4 + gap * 4 + playW;
   const x0 = (NATIVE_W * S - total) / 2 + ox;
-  const y = (HUD_TOP * TILE + MAZE_ROWS * TILE + HUD_BOT * TILE) * S + oy - h0 - S * 1.5;
+  const y = rosterTop() + oy;
   // on the way out the cards are only pictures: the last resting rects stand
   if (!leaving) rosterUI.slots = [];
   ctx.save();
@@ -5436,8 +6303,12 @@ function drawRoster(ctx, ox, oy, leaving) {
   });
 
   /* The camp-limit dial: a small capsule above the roster. Click to cycle.
-     This is the player's own rule, so it lives in the player's layer. */
-  {
+     This is the player's own rule, so it lives in the player's layer. The
+     practice switches the rule off and hides the dial with it, so nothing
+     there can overwrite the setting the player comes back to. */
+  if (game.drill) {
+    if (!leaving) rosterUI.camp = null;
+  } else {
     const chipW = S * 34, chipH = S * 6;
     const cxp = x0, cyp = y - chipH - S * 1.2;
     if (!leaving) rosterUI.camp = { x: cxp, y: cyp, w: chipW, h: chipH };
@@ -5450,9 +6321,18 @@ function drawRoster(ctx, ox, oy, leaving) {
       pressIn(ctx, look, cxp + chipW / 2, cy + chipH / 2);
       glassPlate(ctx, cxp, cy, chipW, chipH, chipH / 2, 0);
       ctlTint(ctx, look, cxp, cy, chipW, chipH, chipH / 2);
+      /* The first time the limit freezes a game, the toast names the chip
+         and the chip answers once: it lights as if hovered, and lets go. */
+      const nudge = campPulse();
+      if (nudge > 0) {
+        ctx.save();
+        ctx.globalAlpha *= nudge;
+        ctlTint(ctx, { hover: true, pressed: false }, cxp, cy, chipW, chipH, chipH / 2);
+        ctx.restore();
+      }
       ctx.save();
       ctx.strokeStyle = TOKENS.line;
-      ctx.globalAlpha *= look.hover ? 0.8 : 0.45;
+      ctx.globalAlpha *= Math.max(look.hover ? 0.8 : 0.45, nudge);
       ctx.lineWidth = uiDpr;
       plate(ctx, cxp, cy, chipW, chipH, chipH / 2);
       ctx.stroke();
@@ -5476,25 +6356,57 @@ function drawRoster(ctx, ox, oy, leaving) {
      matters. A ring round the triangle closes as the squad fills up with
      orders -- a reading, not a gate; PLAY with gaps is still PLAY. While a
      ghost is overdue it turns amber and shows a lock, and stays inert:
-     ghosts don't camp. */
+     ghosts don't camp.
+     The practice has one real gate, and it wears the lock too -- but on
+     plain glass, not amber: amber means a ghost has been left too long,
+     and a newcomer who has not drawn yet has done nothing wrong. It
+     shakes its head when pressed, the way the pill does for an overdue
+     ghost. When the practice's route is down, the lock is gone and a
+     green rim breathes round the button: this is the next press. */
   const px = x0 + 4 * (slotW + gap);
   if (!leaving) rosterUI.play = { x: px, y, w: playW, h: h0 };
   const pm = cardMotion(5, leaving);
   if (pm.a > 0.01) {
-    const blocked = !!stalledHunter();
+    const face = playLook();
+    const blocked = face === 'overdue', gated = face === 'gated';
     const squad = game.hunters.filter(h => h.isCommandable());
     const ready = squad.length ? squad.filter(h => h.path).length / squad.length : 1;
     const py = y + pm.dy;
-    const cx = px + playW / 2, cy = py + h0 / 2;
+    const since = uiClock - fx.refusedAt;
+    const shake = gated && since < 14 && !reducedMotion()
+      ? Math.sin(since * 1.9) * (1 - since / 14) * S * 1.6 : 0;
+    const cx = px + playW / 2 + shake, cy = py + h0 / 2;
     const look = ctlLook('play');
     ctx.save();
     ctx.globalAlpha = pm.a * (blocked ? 0.85 : 1);
+    if (face === 'go') {
+      const m = Math.max(1.5 * uiDpr, S * 0.9);
+      const breath = reducedMotion() ? 0.6 : 0.4 + 0.4 * (0.5 + 0.5 * Math.sin(uiClock * 0.09));
+      ctx.save();
+      ctx.strokeStyle = TOKENS.ok;
+      ctx.globalAlpha *= breath;
+      ctx.lineWidth = Math.max(1.5 * uiDpr, S * 0.45);
+      plate(ctx, px - m, py - m, playW + m * 2, h0 + m * 2, h0 / 2 + m);
+      ctx.stroke();
+      ctx.restore();
+    }
     pressIn(ctx, look, cx, cy);
-    glassPlate(ctx, px, py, playW, h0, h0 / 2, 0, blocked ? TOKENS.warn : TOKENS.ok);
-    ctlTint(ctx, look, px, py, playW, h0, h0 / 2);
+    glassPlate(ctx, px + shake, py, playW, h0, h0 / 2, 0,
+      gated ? TOKENS.glass : blocked ? TOKENS.warn : TOKENS.ok);
+    ctlTint(ctx, look, px + shake, py, playW, h0, h0 / 2);
     ctx.fillStyle = TOKENS.onColor;
     ctx.strokeStyle = TOKENS.onColor;
-    if (blocked) {
+    if (gated) {
+      ctx.save();
+      ctx.strokeStyle = TOKENS.line;
+      ctx.globalAlpha *= look.hover ? 0.8 : 0.5;
+      ctx.lineWidth = uiDpr;
+      plate(ctx, px + shake, py, playW, h0, h0 / 2);
+      ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = ctx.strokeStyle = TOKENS.muted;
+      padlockGlyph(ctx, cx, cy, S);
+    } else if (blocked) {
       padlockGlyph(ctx, cx, cy, S);
     } else {
       const rp = Math.min(playW, h0) / 2 - S * 1.8;
@@ -5896,6 +6808,1574 @@ function drawGlassOver(ctx, ox, oy) {
   drawDragTag(ctx, ox, oy);
 }
 
+/* ---- the practice's coach ----
+   One card, one instruction at a time, docked just above where the roster
+   rests so it never jumps when time stops and the roster rises under it.
+   Its words are read off the practice's state and the live idiom every
+   frame -- nothing it says is stored, so closing the manual or freezing
+   mid-watch always lands on the right line. Around it, a few neutral marks
+   on the board: a dashed ring on the ghost the card means, a ripple when
+   nobody has touched anything, a chevron over the den door, and -- only
+   after a while untouched -- a dotted fingertip showing the gesture. They
+   are white and grey, never a ghost's color, never arrowed or beaded, so
+   nothing of the coach's can be mistaken for an order. Rects are display
+   px, for pressDown; null whenever that part is not taking presses.
+     card   the whole plate: a press here is not a press on the maze
+     skip   SKIP, the one live control on it
+     play   the graduation sheet's PLAY (the whole screen answers, though) */
+const coachUI = { card: null, skip: null, play: null };
+
+/* Presentation time for the practice, uiClock throughout; the sim never
+   reads it. Input stamps the presses; coachNotice, run whenever the card
+   is read, stamps what changed on it.
+     startedAt     the practice began: the double-press guard, the card's rise
+     gradAt        the graduation sheet first went up
+     pressAt       the last press or key of any kind
+     tapAt         the last press on a ghost that let go without a drag
+     key, stepAt   the step on the card (and its scene), and when it came
+     fails, failAt missed traps seen, and when the last one reloaded
+     lead, leadAt  the lead on the card, and when it last changed
+     cap, capAt    ...and the caption
+     tipLen, tipAt the route in hand's length, and when it last changed
+     dock, dockAt  where the card rests, 'bottom' or 'top', and since when
+     clearAt       since when the bottom has been clear, while it rests at the top
+     geo           the drawn y and height springing to the resting ones
+                   ({ y0, h0, y1, h1, t }), or null before the first frame
+     heroCopy      what the hero card last said, while it has yet to go home
+     heroAt        when it set off for its dock, or null before it has
+     heroLeft      the hero's rect, display px, and the uiClock `at` a press on
+                   it stopped time: its glass a moment longer (pressDown)
+     drawn         the plate as drawn this frame, display px -- for the tests
+     goneAt        the catch took the card off the glass */
+const coachFx = {
+  startedAt: -1e9, gradAt: null, pressAt: -1e9, tapAt: -1e9,
+  key: null, stepAt: -1e9, fails: 0, failAt: -1e9,
+  lead: null, leadAt: -1e9, cap: null, capAt: -1e9,
+  tipLen: 0, tipAt: -1e9, dock: 'bottom', dockAt: -1e9, clearAt: -1e9, geo: null,
+  heroCopy: null, heroAt: null, heroLeft: null, drawn: null, goneAt: null,
+};
+function coachReset() {
+  Object.assign(coachFx, {
+    startedAt: uiClock, gradAt: null, pressAt: uiClock, tapAt: -1e9,
+    key: null, stepAt: uiClock, fails: 0, failAt: -1e9,
+    lead: null, leadAt: -1e9, cap: null, capAt: -1e9,
+    tipLen: 0, tipAt: -1e9, dock: 'bottom', dockAt: -1e9, clearAt: uiClock, geo: null,
+    heroCopy: null, heroAt: null, heroLeft: null, drawn: null, goneAt: null,
+  });
+}
+
+/* The stuck ladder, in uiClock ticks. A rung only ever changes what the
+   glass says or shows -- nothing here moves a ghost, a clock or a route,
+   and nothing gets worse for the player while they wait. */
+const REFUSAL_SHOWN = 180;   // a refusal's reason, or a tap's, stays on the card
+const COACH_RIPPLE = 240;    // 4s untouched in scene one: the maze starts to pulse
+const COACH_ANYWHERE = 600;  // 10s: ...and the caption says where
+const COACH_SHOW = 300;      // 5s frozen and untouched: the demo, or the ring on ▶
+const COACH_DEN_LIVE = 360;  // 6s of live play in the den step without a freeze
+const COACH_SKIP = 1200;     // 20s in one step: SKIP stops being quiet
+const COACH_STALL = 36;      // 600ms of a tip that will not follow the pointer
+const COACH_FADE = 0.35;     // a tip, with something of the board's under it (the card moves instead)
+const GRAD_SWELL = 60;       // the ? chip's one swell as GOT HIM lands
+const COACH_STEPS = ['freeze', 'draw', 'go', 'den', 'trap'];   // the pips
+
+/* What changed since the card last looked. Cheap and idempotent: it only
+   notes when a thing became different, so it can run as often as the
+   card is read. */
+function coachNotice() {
+  const d = game.drill;
+  if (!d) return;
+  const key = d.step + '|' + d.stage;
+  const was = coachFx.key;
+  if (key !== coachFx.key) { coachFx.key = key; coachFx.stepAt = uiClock; }
+  if (d.fails !== coachFx.fails) {
+    // a retry starts its step over, idle clock and all
+    coachFx.fails = d.fails;
+    coachFx.failAt = uiClock;
+    coachFx.stepAt = uiClock;
+  }
+  /* The trap is a new board: its card starts at whichever dock keeps him
+     and the rings clear, simply there, with no dwell to sit out first. */
+  if (d.step === 'trap' && coachFx.stepAt === uiClock && (was !== key || coachFx.failAt === uiClock)) {
+    coachFx.dockAt = -1e9;
+    coachFx.geo = null;
+  }
+  const n = Draw.active ? Draw.active.tiles.length : 0;
+  if (n !== coachFx.tipLen) { coachFx.tipLen = n; coachFx.tipAt = uiClock; }
+}
+/* How long the player has left the practice alone: since the step began,
+   the last press, and the last time time itself stopped or started. */
+function coachIdle() {
+  const since = Math.max(coachFx.stepAt, coachFx.pressAt,
+    game.phase === 'command' ? fx.enterAt : fx.thawAt);
+  return uiClock - since;
+}
+/* A drag going nowhere: the tip has not moved for a beat while the
+   pointer is two tiles off it. The den has its own version -- straight up
+   from the door is wall, and the tip will sit on the door tile for as
+   long as you pull -- because there the fix is a direction, not a hint. */
+function coachStall() {
+  const a = Draw.active;
+  if (!a || !input.dragMoved || game.phase !== 'command') return null;
+  if (uiClock - coachFx.tipAt < COACH_STALL) return null;
+  const tip = a.tiles[a.tiles.length - 1];
+  if (Math.hypot(input.mx - tcx(tip.c), input.my - tcy(tip.r)) < TILE * 2) return null;
+  return tip.r === DEN_EXIT_ROW && (tip.c === DOOR_C0 || tip.c === DOOR_C1)
+    && a.hunter.inDenStates() ? 'door' : 'lane';
+}
+/* The trap, read the way he will meet it: which side of him each drawn
+   route comes at him from. A route's side is where it first comes up into
+   his corridor, the top row, or failing that where it ends, if that is up
+   in the corridor or the risers under its ends; one that never comes up
+   there closes nothing. Two routes are not a trap -- "from both sides"
+   is, and the card says which it is looking at rather than counting.
+   The card's judgment, drawn from the board; the sim never asks. */
+function trapSides() {
+  const e = game.evader.tile();
+  let west = 0, east = 0;
+  for (const h of game.hunters) {
+    if (!h.path) continue;
+    const ts = h.path.tiles.slice(h.path.idx || 0);
+    const tip = ts[ts.length - 1];
+    const at = ts.find(t => t.r === 1 && t.c !== e.c) || (tip && tip.r <= 4 && tip.c !== e.c ? tip : null);
+    if (at && at.c < e.c) west++;
+    else if (at) east++;
+  }
+  return { west, east, at: west + east, pinch: west > 0 && east > 0 };
+}
+/* The step still wants its route drawn. */
+function coachNeedsRoute() {
+  const d = game.drill;
+  if (d.step === 'draw') return !drillLaneRouted();
+  if (d.step === 'go') return tutResumeLocked();   // its route erased before time ran
+  if (d.step === 'den') return !drillDenOrdered();
+  if (d.step === 'trap') return !trapSides().pinch;
+  return false;
+}
+/* Frozen, and the practice's route is down: PLAY is the next press. */
+function coachReady() {
+  const d = game.drill;
+  if (!d || game.phase !== 'command' || tutResumeLocked()) return false;
+  if (d.step === 'go') return game.hunters.some(h => h.path);
+  if (d.step === 'den') return drillDenOrdered();
+  if (d.step === 'trap') return trapSides().pinch;
+  return false;
+}
+/* PLAY's face: the practice's gate, an overdue ghost, the practice's go,
+   or plain PLAY. drawRoster wears it; the tests read it. */
+function playLook() {
+  if (tutResumeLocked()) return 'gated';
+  if (stalledHunter()) return 'overdue';
+  return coachReady() ? 'go' : 'play';
+}
+
+/* What the card says now: { lead, caption, skip, hint }, and on the
+   graduation sheet head, button and micro too. Chosen here, not at the
+   step change, so the idiom can change under it: a finger never reads
+   click, a mouse never reads tap. `hint` marks a caption that is
+   answering something the player just did, or failed to do for a while;
+   it is set in ink rather than the body's grey.
+   Every line is a sentence, in sentence case: they are read while the
+   hand is busy, and capitals read slower than prose. One idea a line,
+   and a caption under fifty letters where it can be. The labels round
+   them (SKIP ›, PLAY, GOT HIM.) keep the cabinet's capitals. */
+function drillCopy() {
+  const d = game.drill;
+  if (!d) return { lead: '', caption: '' };
+  coachNotice();
+  const tap = touchMode;
+  const V = tap ? 'Tap' : 'Click', v = tap ? 'tap' : 'click';
+  const frozen = game.phase === 'command';
+  const idle = coachIdle();
+  const paths = game.hunters.filter(h => h.path).length;
+  // the draw step's route went onto the door: the game keeps it, the card names it
+  const homeBound = d.step === 'draw' && !drillLaneRouted() && game.hunters.some(h => h.path && h.path.home);
+  let lead = '', caption = '', hint = false;
+  switch (d.step) {
+    case 'freeze':
+      // the hero card: the state in the lead, the one thing to do under it
+      lead = 'Time is running.';
+      caption = V + ' anywhere to stop it.';
+      if (!frozen && idle >= COACH_ANYWHERE) { caption = 'Anywhere on the maze works.'; hint = true; }
+      break;
+    case 'draw':
+      lead = tap ? 'Put a finger on the red ghost and drag a path.'
+                 : 'Press on the red ghost and drag a path.';
+      caption = 'It walks your path, then stops at a wall.';
+      if (homeBound) { caption = 'That sends it home. Draw it along a corridor.'; hint = true; }
+      break;
+    case 'go':
+      if (frozen && tutResumeLocked()) {
+        /* The route was erased before time ever ran: PLAY is shut again,
+           so the card goes back to the draw step's words rather than
+           sending the player to a control that will not answer. */
+        lead = tap ? 'Put a finger on the red ghost and drag a path.'
+                   : 'Press on the red ghost and drag a path.';
+        caption = 'It walks your path, then stops at a wall.';
+      } else if (frozen) {
+        lead = 'Now ' + v + ' empty maze, or ▶, to start time.';
+        caption = 'You can stop and redraw whenever you like.';
+        if (idle >= COACH_SHOW) { caption = '▶ is at the bottom right.'; hint = true; }
+      } else if (d.stopT > 0 || d.resumeT >= DRILL_WATCH_MAX) {
+        const w = game.hunters[d.watchIdx];
+        if (w && w.inDenStates()) {
+          // a route that ended on the door: it went home, and home it stays
+          lead = 'It walked your path home to the den.';
+          caption = 'It waits there until you draw it out.';
+        } else {
+          // it coasted off the end to the wall: waiting is the lesson, not stillness
+          lead = 'Path done, so it stopped at a wall.';
+          caption = 'Without a path, a ghost waits where it stops.';
+        }
+      } else lead = 'Watch it walk your path.';
+      break;
+    case 'den': {
+      const ordered = drillDenOrdered();
+      if (!frozen && ordered) lead = 'Here it comes.';
+      else if (!frozen) {
+        // three, or all four if the red ghost's route took it home
+        const n = game.hunters.filter(h => h.inDenStates()).length;
+        const who = n === game.hunters.length ? 'All ' + n + ' ghosts wait'
+          : n === 1 ? '1 more ghost waits' : n + ' more ghosts wait';
+        lead = who + ' in the den. ' + V + ' to stop time.';
+        caption = 'They only come out when you draw them out.';
+      } else if (ordered) lead = V + ' empty maze, or ▶, to let it out.';
+      else {
+        lead = tap ? 'Put a finger on the pink ghost and drag it out.'
+                   : 'Press on the pink ghost and drag it out.';
+        caption = 'Its path starts at the door. Then left or right.';
+        // a route for the red ghost again is not the lesson; say so kindly
+        if (game.hunters[0].path) { caption = 'The red ghost has its path. Now the pink one.'; hint = true; }
+      }
+      break;
+    }
+    case 'trap': {
+      const sides = trapSides();
+      if (!frozen) lead = 'Squeeze…';
+      else if (paths === 0 && d.failKind === 'one') {
+        lead = "He got away. One ghost can't catch him.";
+        caption = 'Send both: one at each end of his corridor.';
+      } else if (paths === 0 && d.failKind === 'open') {
+        lead = 'He slipped out an open end.';
+        caption = 'Send one from each side, all the way to him.';
+      } else if (sides.pinch) {
+        lead = V + ' empty maze, or ▶, to spring the trap.';
+        caption = 'He has nowhere left to run.';
+      } else if (sides.at >= 2) {
+        lead = 'Both are on one side of him.';
+        caption = 'Send one at him from the far side.';
+      } else if (paths === 1 || sides.at === 1) {
+        lead = "One ghost won't catch him.";
+        caption = 'Send the other one at him from the far side.';
+      } else {
+        // nothing drawn, or nothing drawn that comes anywhere near him
+        lead = "Catch him. He's faster than any one ghost.";
+        caption = 'Send the red and pink ghosts from both sides.';
+      }
+      /* two misses: the corridor's two ends get rings, and the card points
+         at them -- by what they are, since the ghosts wear rings too */
+      if (frozen && !sides.pinch && d.fails >= 2) { caption = 'Send one ghost to each end of his corridor.'; hint = true; }
+      break;
+    }
+    case 'graduate':
+      return {
+        head: 'GOT HIM.',
+        lead: 'Stop time, draw paths, trap him from two sides.',
+        caption: 'For real: catch him 3 times before he eats every dot.',
+        button: 'PLAY',
+        micro: 'Everything else is under the ? chip.',
+      };
+  }
+  /* What the player just did, answered in the step's own terms: a drag
+     going nowhere, a refused PLAY, a press on a ghost that let go before
+     it drew. The newest of the last two wins; a live drag beats both. */
+  if (frozen) {
+    const stall = coachStall();
+    const refused = tutResumeLocked() && uiClock - fx.refusedAt < REFUSAL_SHOWN;
+    const tapped = coachNeedsRoute() && uiClock - coachFx.tapAt < REFUSAL_SHOWN
+      && (!refused || coachFx.tapAt > fx.refusedAt);
+    if (stall === 'door') caption = 'Go left or right along the top of the den first.';
+    else if (stall) caption = 'Paths follow the corridors. Trace along one.';
+    else if (tapped) {
+      caption = tap ? 'Keep your finger down and drag before you lift it.'
+                    : 'Hold the button down and drag before you let go.';
+    } else if (refused && !homeBound) {
+      caption = d.step === 'den' ? "The pink ghost first. It's waiting in the den."
+        : d.step === 'trap'
+          ? (tap ? 'Draw a path first: finger on a ghost, then drag.'
+                 : 'Draw a path first: press on a ghost and drag.')
+          : (tap ? 'Start with your finger on the red ghost.'
+                 : 'Start the drag on the red ghost.');
+    }
+    if (stall || tapped || refused) hint = true;
+  }
+  // four misses: SKIP stops being an escape hatch and becomes the way on
+  const skip = d.step === 'trap' && d.fails >= 4 ? 'START THE GAME ›' : 'SKIP ›';
+  return { lead, caption, skip, hint };
+}
+
+/* What a line says when even two lines at the role's floor will not hold
+   it, the way HELP_SHORT does it for the manual: keyed by the line it
+   stands in for, so each idiom keeps its own verb. A list is tried in
+   order. The practice's sentences wrap before they shorten (coachSet),
+   and on every glass the tests know -- down to 360 CSS px at dpr 3 --
+   none of them gets this far: these are the floor under the floor. The
+   labels set on one line (SKIP's START THE GAME ›, the manual's control,
+   the game-over chip) still reach for theirs through fitText. */
+const COACH_SHORT = {
+  'Press on the red ghost and drag a path.':       'Drag a path from the red ghost.',
+  'Put a finger on the red ghost and drag a path.': 'Drag from the red ghost.',
+  'It walks your path, then stops at a wall.':     ['It walks your path, then stops.', 'It walks your path.'],
+  'That sends it home. Draw it along a corridor.': ['That goes home. Use a corridor.', 'Use a corridor.'],
+  'Now click empty maze, or ▶, to start time.':    'Click empty maze or ▶ to run.',
+  'Now tap empty maze, or ▶, to start time.':      'Tap empty maze or ▶ to run.',
+  'You can stop and redraw whenever you like.':    'Stop and redraw any time.',
+  'It walked your path home to the den.':          'It walked home.',
+  'It waits there until you draw it out.':         'It waits for a path out.',
+  'Path done, so it stopped at a wall.':           'Path done: it stopped.',
+  'Without a path, a ghost waits where it stops.': ['No path, no chase.', 'It waits.'],
+  'Send one ghost to each end of his corridor.':   ['One ghost to each end.', 'One at each end.'],
+  'Start the drag on the red ghost.':              'Start on the red ghost.',
+  'Start with your finger on the red ghost.':      'Start on the red ghost.',
+  'Hold the button down and drag before you let go.': ['Hold the button and drag.', 'Hold and drag.'],
+  'Keep your finger down and drag before you lift it.': ['Keep your finger down, drag.', 'Hold and drag.'],
+  'Paths follow the corridors. Trace along one.':  'Trace along a corridor.',
+  '3 more ghosts wait in the den. Click to stop time.': ['3 wait in the den. Click to stop.', 'Click to stop time.'],
+  '3 more ghosts wait in the den. Tap to stop time.':   ['3 wait in the den. Tap to stop.', 'Tap to stop time.'],
+  'All 4 ghosts wait in the den. Click to stop time.':  ['4 wait in the den. Click to stop.', 'Click to stop time.'],
+  'All 4 ghosts wait in the den. Tap to stop time.':    ['4 wait in the den. Tap to stop.', 'Tap to stop time.'],
+  'They only come out when you draw them out.':    'They leave only on a path.',
+  'Press on the pink ghost and drag it out.':      ['Drag the pink ghost out.', 'Drag pink out.'],
+  'Put a finger on the pink ghost and drag it out.': ['Drag the pink ghost out.', 'Drag pink out.'],
+  'Its path starts at the door. Then left or right.': ['From the door, go left or right.', 'Then left or right.'],
+  'The red ghost has its path. Now the pink one.': 'Now the pink one.',
+  'Go left or right along the top of the den first.': ['Go left or right first.', 'Left or right first.'],
+  'Click empty maze, or ▶, to let it out.':        'Click empty maze or ▶.',
+  'Tap empty maze, or ▶, to let it out.':          'Tap empty maze or ▶.',
+  "He got away. One ghost can't catch him.":       "One ghost can't catch him.",
+  'Send both: one at each end of his corridor.':   'Send both, one at each end.',
+  'Send one from each side, all the way to him.':  ['One each side, all the way in.', 'One from each side.'],
+  'Send one at him from the far side.':            'One from the far side.',
+  "Catch him. He's faster than any one ghost.":    ["He's faster than one ghost.", 'Catch him.'],
+  'Send the red and pink ghosts from both sides.': ['Send red and pink, both sides.', 'Send red and pink.'],
+  'Send the other one at him from the far side.':  'Now the other, far side.',
+  'Click empty maze, or ▶, to spring the trap.':   'Click empty maze or ▶.',
+  'Tap empty maze, or ▶, to spring the trap.':     'Tap empty maze or ▶.',
+  "The pink ghost first. It's waiting in the den.": 'The pink ghost first.',
+  'Draw a path first: press on a ghost and drag.': 'Draw a path first.',
+  'Draw a path first: finger on a ghost, then drag.': 'Draw a path first.',
+  'START THE GAME ›':                              'PLAY ›',
+  'Stop time, draw paths, trap him from two sides.': ['Stop time, draw paths, trap him.', 'Stop, draw, trap.'],
+  'For real: catch him 3 times before he eats every dot.': ['Catch him 3 times before the dots go.', 'Catch him 3 times.'],
+  'Everything else is under the ? chip.':          'More under the ? chip.',
+  // after the practice: the tips, the manual's control, the game-over chip
+  '3 more ghosts wait in the den for your paths.': ['3 more wait in the den for paths.', '3 more wait for paths.'],
+  'Keep them clear until they flash back.':        ['Keep clear till they flash back.', 'Keep them clear.'],
+  'Eaten ghosts wait 5 seconds in the den.':       ['Eaten ghosts wait 5s in the den.', 'Eaten: 5s in the den.'],
+  'Give it a path. The camp limit chip sets how long.': ['Give it a path. Camp limit sets how long.', 'Give it a path.'],
+  'White beads: these two arrive together.':       ['White beads: they arrive together.', 'White beads: same moment.'],
+  'STUCK? TRY THE 1-MINUTE PRACTICE ›':            ['TRY THE 1-MINUTE PRACTICE ›', 'TRY THE PRACTICE ›'],
+  'RESTART PRACTICE':                              'RESTART',
+  'END THIS GAME?':                                'END GAME?',
+};
+function coachLine(ctx, text, x, y, role, maxW, color) {
+  return fitText(ctx, text, COACH_SHORT[text] || null, x, y, role, maxW, color);
+}
+
+/* ---- setting a sentence ----
+   The coach's lines are sentences, and a sentence that does not fit is
+   wrapped, not shrunk: at its resting size, onto at most COACH_LINES
+   lines, broken where the two come out most nearly even, and the plate
+   grows to hold them. Only if two lines at the role's floor will not
+   hold it does it give up size, a pixel at a time, and then words, to
+   its COACH_SHORT forms; if nothing holds, the shortest is set at the
+   floor anyway and whatever is left rides on the second line --
+   legibility beats a tidy margin, as it does in fitText. ▶ is glued to
+   the word before it, so a line never starts on a bare arrow. Measured
+   with every digit read as 0, as fitText measures. Returns { lines, px,
+   w }: w the widest line as set. Kept per context and dropped by
+   layout(): the card asks every frame, and the answer only changes with
+   the words or the glass. */
+const COACH_LINES = 2;
+let coachSets = new WeakMap();
+function wrapWords(ctx, text, maxW, most) {
+  const width = t => ctx.measureText(t.replace(/[0-9]/g, '0')).width;
+  const words = [];
+  for (const w of text.split(' ')) {
+    if (words.length && /^▶/.test(w)) words[words.length - 1] += ' ' + w;
+    else words.push(w);
+  }
+  const lines = [];
+  let line = '';
+  for (const w of words) {
+    if (line && width(line + ' ' + w) > maxW) { lines.push(line); line = w; }
+    else line = line ? line + ' ' + w : w;
+  }
+  lines.push(line);
+  if (most === Infinity) return lines;
+  if (lines.length > most || lines.some(l => width(l) > maxW)) return null;
+  if (lines.length === 2) {
+    // the even break: the one whose longer half is shortest
+    let best = null, cost = Infinity;
+    for (let i = 1; i < words.length; i++) {
+      const a = words.slice(0, i).join(' '), b = words.slice(i).join(' ');
+      const c = Math.max(width(a), width(b));
+      if (c <= maxW && c < cost) { cost = c; best = [a, b]; }
+    }
+    if (best) return best;
+  }
+  return lines;
+}
+function coachSet(ctx, text, role, maxW) {
+  let memo = coachSets.get(ctx);
+  if (!memo) { memo = new Map(); coachSets.set(ctx, memo); }
+  const key = role + '|' + Math.round(maxW) + '|' + text;
+  const had = memo.get(key);
+  if (had) return had;
+  const T = TYPE[role];
+  const tries = [text].concat(COACH_SHORT[text] === undefined ? [] : COACH_SHORT[text]);
+  ctx.save();
+  let set = null;
+  for (let n = 0; n < tries.length && !set; n++) {
+    for (let px = T.max; px >= T.min && !set; px--) {
+      setRoleFont(ctx, T, px);
+      const lines = wrapWords(ctx, tries[n], maxW, COACH_LINES);
+      if (lines) set = { lines, px };
+    }
+  }
+  if (!set) {
+    setRoleFont(ctx, T, T.min);
+    const lines = wrapWords(ctx, tries[tries.length - 1], maxW, Infinity);
+    set = { lines: [lines[0]].concat(lines.length > 1 ? [lines.slice(1).join(' ')] : []), px: T.min };
+  }
+  setRoleFont(ctx, T, set.px);
+  set.w = Math.max(...set.lines.map(l => ctx.measureText(l).width));
+  ctx.restore();
+  if (memo.size > 256) memo.clear();
+  memo.set(key, set);
+  return set;
+}
+// one line of a set to the next, display px; and the whole set's height
+function setStep(set) { return Math.round(set.px * 1.25); }
+function setHeight(set) { return set ? set.lines.length * setStep(set) : 0; }
+/* A set, drawn: y the middle of its first line, alignment the caller's. */
+function drawSet(ctx, set, x, y, role, color) {
+  const T = TYPE[role], step = setStep(set);
+  ctx.save();
+  setRoleFont(ctx, T, set.px);
+  ctx.fillStyle = color;
+  set.lines.forEach((l, i) => ctx.fillText(l, x, y + i * step));
+  ctx.restore();
+}
+
+/* ---- the coach's marks on the board ----
+   What the coach draws over the maze this frame, decided in one place so
+   the card, the tests and the drawing never disagree:
+     rings    [{ h, thin }] a ghost the card is talking about; thin while it
+              walks, so it follows without shouting
+     ringPlay the ring on ▶, when nobody has found it
+     ripple   ticks into the idle pulse from the maze centre, or -1
+     bracket  the den, outlined, while three ghosts wait unused in it
+     chevron  up, over the door every den route starts from
+     markers  the trap corridor's two ends, after two misses
+     demo     strokes for the fingertip (native maze px), or null; demoT
+              ticks into it
+     skipLit  SKIP in ink: the player has been stuck long enough to want out
+     breathe  the lead breathes along with the ripple
+     failing  the card is reporting a miss: an amber rim */
+function coachScene() {
+  const s = { rings: [], ringPlay: false, ripple: -1, bracket: false, chevron: false,
+    markers: false, demo: null, demoT: 0, skipLit: false, breathe: false, failing: false };
+  const d = game.drill;
+  if (!d || d.step === 'graduate' || game.phase === 'capture') return s;
+  coachNotice();
+  const frozen = game.phase === 'command';
+  const idle = coachIdle();
+  const inStep = uiClock - coachFx.stepAt;
+  const held = Draw.active ? Draw.active.hunter : null;
+  const paths = game.hunters.filter(h => h.path).length;
+  const R = game.hunters[0], M = game.hunters[1];
+  const ring = (h, thin) => {
+    if (h && h !== held && h.isCommandable()) s.rings.push({ h, thin: !!thin });
+  };
+  const stuck = inStep >= COACH_SKIP || d.refusals >= 3;
+  let demoFrom = COACH_SHOW;
+  switch (d.step) {
+    case 'freeze':
+      if (!frozen && idle >= COACH_RIPPLE) s.ripple = idle - COACH_RIPPLE;
+      s.breathe = s.ripple >= 0;
+      s.skipLit = inStep >= COACH_SKIP;
+      break;
+    case 'draw':
+      if (frozen && !drillLaneRouted()) ring(R);   // a trip home is not yet the route
+      if (frozen && idle >= COACH_SHOW) s.demo = coachDemoDraw();
+      s.skipLit = stuck;
+      break;
+    case 'go':
+      // an erased route shuts PLAY again: ring the red ghost, as the draw step does, not ▶
+      if (frozen && tutResumeLocked()) ring(R);
+      else if (frozen) s.ringPlay = idle >= COACH_SHOW && !Draw.active;
+      else ring(game.hunters[d.watchIdx], true);
+      break;
+    case 'den': {
+      const ordered = drillDenOrdered();
+      if (!frozen && !ordered) {
+        s.bracket = true;
+        if (idle >= COACH_DEN_LIVE) s.ripple = idle - COACH_DEN_LIVE;
+      } else if (!frozen) ring(game.hunters[d.denIdx], true);
+      else if (!ordered) {
+        ring(M);
+        s.chevron = !held || held.inDenStates();
+        if (idle >= COACH_SHOW) s.demo = coachDemoDen();
+      }
+      s.skipLit = stuck;
+      break;
+    }
+    case 'trap':
+      if (frozen) {
+        if (!trapSides().pinch) { if (!R.path) ring(R); if (!M.path) ring(M); }
+        s.markers = d.fails >= 2;
+        s.failing = !!d.failKind && paths === 0;
+        // three misses and the gesture is shown straight away; after one, on a pause
+        if (d.fails >= 3) demoFrom = 0;
+        if (paths < 2 && d.fails >= 1 && idle >= demoFrom) s.demo = coachDemoTrap();
+      }
+      s.skipLit = d.fails >= 3;
+      break;
+  }
+  /* The fingertip is a picture of a gesture, and the moment there is a
+     real one -- any press at all, either button, a finger, one held on
+     the card, a route in hand or an erase sweep -- it is gone. */
+  if (s.demo && (input.leftDown || input.rightDown || input.cardDown || input.touchId !== null
+                 || Draw.active || Draw.erase)) s.demo = null;
+  if (s.demo) s.demoT = idle - demoFrom;
+  return s;
+}
+
+/* The demo strokes, in native maze px. Cosmetic: they are routed with
+   bfsRoute for the look of a corridor and handed to nothing but the
+   drawing below. */
+const tileAt = t => ({ x: tcx(t.c), y: tcy(t.r) });
+function coachDemoDraw() {
+  // from the red ghost, five tiles up the left-hand corridor
+  const R = game.hunters[0];
+  const route = bfsRoute(R.tile(), { c: 1, r: 6 }) || [];
+  return [[{ x: R.x, y: R.y }].concat(route.slice(1, 6).map(tileAt))];
+}
+function coachDemoDen() {
+  // from the pink ghost's seat to the door, up, one step left, and on up
+  const M = game.hunters[1];
+  const up = bfsRoute({ c: 12, r: DEN_EXIT_ROW }, { c: 12, r: 8 }) || [];
+  return [[{ x: M.x, y: M.y }, { x: DEN_EXIT_X, y: M.y },
+    { x: DEN_EXIT_X, y: tcy(DEN_EXIT_ROW) }].concat(up.map(tileAt))];
+}
+function coachDemoTrap() {
+  // one ghost to each end of his corridor and in at him, one after the other
+  const R = game.hunters[0], M = game.hunters[1], E = TRAP.evader;
+  const out = [];
+  if (!R.path) out.push([{ x: R.x, y: R.y }, tileAt({ c: 6, r: 1 }), tileAt(E)]);
+  if (!M.path) out.push([{ x: M.x, y: M.y }, tileAt({ c: 12, r: 5 }), tileAt({ c: 12, r: 1 }), tileAt(E)]);
+  return out;
+}
+
+/* Board px to glass px, for anything the coach pins to the maze. */
+function glassAt(x, y) {
+  return { x: x * scale, y: (y + HUD_TOP * TILE) * scale };
+}
+
+/* The coach's one mark: a dashed hollow ring in plain white, breathing a
+   little and turning slowly, so it reads as pointing rather than as part
+   of the board. `r` a radius, or a rect to ring as a capsule. */
+function coachRing(ctx, x, y, r, thin) {
+  const S = scale, still = reducedMotion();
+  ctx.save();
+  ctx.strokeStyle = TOKENS.ink;
+  ctx.globalAlpha *= thin ? 0.4 : 0.6;
+  ctx.lineWidth = thin ? Math.max(uiDpr, S * 0.3) : Math.max(1.5 * uiDpr, S * 0.45);
+  ctx.setLineDash([S * 1.6, S * 1.1]);
+  ctx.lineDashOffset = still ? 0 : -uiClock * S * 0.06;
+  const b = still ? 1 : 1 + 0.05 * Math.sin(uiClock * 0.1);
+  ctx.beginPath();
+  if (typeof r === 'number') ctx.arc(x, y, r * b, 0, Math.PI * 2);
+  else {
+    const m = S * 2 * b;
+    plate(ctx, r.x - m, r.y - m, r.w + m * 2, r.h + m * 2, r.h / 2 + m);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* Scene one's first question is the freeze, and a board that is simply
+   running gives no hint that it can be touched. So after a while, rings
+   spread from the middle of the maze -- the shape of a press, not of
+   anything the game does. Still, under reduced motion: one faint ring. */
+const RIPPLE_EVERY = 90;   // ticks: a pulse every second and a half
+function drawRipple(ctx, t) {
+  const S = scale;
+  const c = glassAt(NATIVE_W / 2, MAZE_ROWS * TILE / 2);
+  ctx.save();
+  ctx.strokeStyle = TOKENS.muted;
+  ctx.lineWidth = Math.max(uiDpr, S * 0.4);
+  if (reducedMotion()) {
+    ctx.globalAlpha = 0.3;
+    ctx.beginPath(); ctx.arc(c.x, c.y, S * 22, 0, Math.PI * 2); ctx.stroke();
+  } else {
+    for (const lag of [0, 16]) {
+      if (t < lag) continue;
+      const k = ((t - lag) % RIPPLE_EVERY) / RIPPLE_EVERY;
+      const e = 1 - (1 - k) * (1 - k);
+      ctx.globalAlpha = 0.5 * (1 - k) * (1 - k);
+      ctx.beginPath(); ctx.arc(c.x, c.y, S * (5 + 60 * e), 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+/* The fingertip. A hollow white circle presses down at the start of a
+   stroke, slides along it, and lifts; behind it a dotted grey trail fades
+   within half a second. No arrowhead, no beads, no casing, no ghost color
+   -- nothing a route has -- and it is gone the instant a real press lands.
+   Several strokes play one after the other. Under reduced motion the
+   whole of each stroke is simply shown, dotted, with the circle at its
+   start. */
+const DEMO_PRESS = 12;    // ticks: the fingertip lands
+const DEMO_TILE = 7;      // ticks per tile of slide
+const DEMO_LIFT = 12;     // ticks: ...and lifts
+const DEMO_FADE = 30;     // ticks a trail dot lasts behind it
+const DEMO_PERIOD = 144;  // at least this long between one showing and the next
+const DEMO_DOT = 3;       // native px between trail dots
+function polyLength(pts) {
+  let n = 0;
+  for (let i = 1; i < pts.length; i++) n += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+  return n;
+}
+function polyAt(pts, s) {
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const l = Math.hypot(b.x - a.x, b.y - a.y);
+    if (s <= l || i === pts.length - 1) {
+      const k = l ? Math.min(1, Math.max(0, s / l)) : 0;
+      return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+    }
+    s -= l;
+  }
+  return pts[0];
+}
+function drawDemoStroke(ctx, strokes, t) {
+  const S = scale, still = reducedMotion();
+  const lens = strokes.map(polyLength);
+  const durs = lens.map(l => DEMO_PRESS + l / TILE * DEMO_TILE + DEMO_LIFT);
+  const period = Math.max(DEMO_PERIOD, durs.reduce((a, b) => a + b, 0) + DEMO_FADE + 24);
+  let u = still ? 0 : t % period;
+  const tipR = Math.max(5 * uiDpr, S * 3);
+  const dotR = Math.max(uiDpr, S * 0.32);
+  ctx.save();
+  strokes.forEach((pts, i) => {
+    const local = u;
+    u -= durs[i];
+    if (pts.length < 2) return;
+    if (still) {
+      ctx.save();
+      ctx.fillStyle = TOKENS.muted;
+      ctx.globalAlpha = 0.55;
+      for (let s = 0; s <= lens[i]; s += DEMO_DOT) {
+        const p = glassAt(polyAt(pts, s).x, polyAt(pts, s).y);
+        ctx.beginPath(); ctx.arc(p.x, p.y, dotR, 0, Math.PI * 2); ctx.fill();
+      }
+      const p0 = glassAt(pts[0].x, pts[0].y);
+      ctx.strokeStyle = TOKENS.ink;
+      ctx.globalAlpha = 0.7;
+      ctx.lineWidth = Math.max(1.5 * uiDpr, S * 0.4);
+      ctx.beginPath(); ctx.arc(p0.x, p0.y, tipR, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+      return;
+    }
+    if (local < 0) return;
+    const slid = Math.max(0, Math.min(lens[i], (local - DEMO_PRESS) / DEMO_TILE * TILE));
+    // the trail: each dot lit as the tip passes it, gone half a second later
+    ctx.save();
+    ctx.fillStyle = TOKENS.muted;
+    for (let s = 0; s <= slid; s += DEMO_DOT) {
+      const age = local - (DEMO_PRESS + s / TILE * DEMO_TILE);
+      const a = 0.75 * (1 - age / DEMO_FADE);
+      if (a <= 0) continue;
+      const q = polyAt(pts, s), p = glassAt(q.x, q.y);
+      ctx.globalAlpha = a;
+      ctx.beginPath(); ctx.arc(p.x, p.y, dotR, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+    if (local >= durs[i]) return;
+    // the tip: in as it lands, out as it lifts, pressed a little smaller in between
+    const inK = Math.min(1, local / DEMO_PRESS);
+    const outK = Math.min(1, (durs[i] - local) / DEMO_LIFT);
+    const q = polyAt(pts, slid), p = glassAt(q.x, q.y);
+    ctx.save();
+    ctx.globalAlpha = 0.85 * Math.min(inK, outK);
+    ctx.strokeStyle = TOKENS.ink;
+    ctx.lineWidth = Math.max(1.5 * uiDpr, S * 0.4);
+    ctx.beginPath(); ctx.arc(p.x, p.y, tipR * (1 + 0.35 * (1 - inK) + 0.35 * (1 - outK)), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha *= 0.18;
+    ctx.fillStyle = TOKENS.ink;
+    ctx.fill();
+    ctx.restore();
+  });
+  ctx.restore();
+}
+
+/* The marks, under the card. */
+function drawCoachMarks(ctx, s) {
+  const S = scale;
+  if (s.ripple >= 0) drawRipple(ctx, s.ripple);
+  if (s.bracket) {
+    /* The den, bracketed at its corners in the glass's hairline: three
+       ghosts are in there doing nothing, and the card is about to ask
+       why. */
+    const a = glassAt(DEN.left * TILE - 1.5, DEN.top * TILE - 1.5);
+    const b = glassAt((DEN.right + 1) * TILE + 1.5, (DEN.bottom + 1) * TILE + 1.5);
+    const L = S * 4;
+    ctx.save();
+    ctx.strokeStyle = TOKENS.line;
+    ctx.globalAlpha = reducedMotion() ? 0.8 : 0.6 + 0.3 * Math.sin(uiClock * 0.08);
+    ctx.lineWidth = Math.max(uiDpr, S * 0.4);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (const [x, y, dx, dy] of [[a.x, a.y, 1, 1], [b.x, a.y, -1, 1], [a.x, b.y, 1, -1], [b.x, b.y, -1, -1]]) {
+      ctx.moveTo(x + dx * L, y); ctx.lineTo(x, y); ctx.lineTo(x, y + dy * L);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (s.markers) {
+    for (const c of [6, 12]) {
+      const p = glassAt(tcx(c), tcy(1));
+      coachRing(ctx, p.x, p.y, S * 5, false);
+    }
+  }
+  s.rings.forEach(({ h, thin }) => {
+    const p = glassAt(h.x, h.y);
+    coachRing(ctx, p.x, p.y, S * (thin ? 9 : 10), thin);
+  });
+  if (s.ringPlay && rosterUI.play) coachRing(ctx, 0, 0, rosterUI.play, false);
+  if (s.chevron) {
+    /* Every den route starts on the door, whatever the finger does, so
+       the door gets an arrow: up and out, bobbing. */
+    const bob = reducedMotion() ? 0 : Math.sin(uiClock * 0.12) * S * 0.6;
+    const p = glassAt(DEN_EXIT_X, DOOR_ROW * TILE + TILE / 2);
+    const w = S * 2.6, hh = S * 1.5;
+    ctx.save();
+    ctx.strokeStyle = TOKENS.ink;
+    ctx.lineWidth = Math.max(1.5 * uiDpr, S * 0.55);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    [0, 1].forEach(n => {
+      const y = p.y + bob - n * S * 2.2;
+      ctx.globalAlpha = n ? 0.4 : 0.9;
+      ctx.beginPath();
+      ctx.moveTo(p.x - w, y + hh); ctx.lineTo(p.x, y - hh); ctx.lineTo(p.x + w, y + hh);
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+  if (s.demo) drawDemoStroke(ctx, s.demo, s.demoT);
+}
+
+/* ---- the hero ----
+   The practice's first card is its one instruction before the player
+   knows where anything is, so it is not docked: it is set large and
+   centred over the den, the middle of the maze, where the eye already
+   is. It keeps the card's top row -- PRACTICE, the pips, SKIP -- and its
+   sentences are centred under it. The freeze that answers it sends it
+   home to the bottom dock (coachMove), and the player has seen where the
+   next instruction will be. */
+function coachHero() {
+  const d = game.drill;
+  return !!d && d.step === 'freeze';
+}
+// the den's middle, display px down the glass: where a hero centres
+function heroMid() {
+  return glassAt(NATIVE_W / 2, (DEN.top + DEN.bottom + 1) * TILE / 2).y;
+}
+// a hero's y for height h: on the den's middle, and never under the pill or the roster
+function heroY(h) {
+  const S = scale;
+  const top = pillBox().floor + S * 1.5, bottom = rosterTop() - S * 3 - h;
+  return Math.round(Math.max(top, Math.min(bottom, heroMid() - h / 2)));
+}
+/* The first game's hero toast for height h. Not on the den: its caption
+   is about the three ghosts waiting there, and a toast over them would
+   point at what it hides. It takes the open band of maze above the
+   first ghost's start, under the pill, centred in it; READY! and the den
+   are left below it in plain view. Where that band is too short for it,
+   it hangs under READY! instead, in the empty lower maze. */
+function heroToastY(h) {
+  const S = scale;
+  const top = pillBox().floor + S * 1.5;
+  const above = glassAt(0, tcy(DEN_EXIT_ROW) - TILE).y - S * 1.5;
+  if (above - top >= h) return Math.round(top + (above - top - h) / 2);
+  const under = glassAt(0, (MSG_ROW + 1) * TILE).y + S * 1.5;
+  return Math.round(Math.max(top, Math.min(rosterTop() - S * 3 - h, under)));
+}
+
+/* The card's resting place, in display px, at one of its two docks (see
+   coachDock), or as the hero; the current one when none is named. It is
+   sized from the type actually in use: 78% of the glass where there is
+   room, and wider where the lead has hit its floor, so a phone still gets
+   a few words a line -- the hero a size up in all of it. Its height is
+   whatever its sentences wrap to -- the top row, then the lead and the
+   caption as coachSet sets them -- so it grows to fit rather than
+   squeezing them. `ctx` measures (the screen's by default)
+   and `copy` is what it says (the card's own by default). */
+function coachCardRect(ctx, copy, dock) {
+  ctx = ctx || screenCtx;
+  copy = copy || drillCopy();
+  dock = dock || (coachHero() ? 'hero' : coachFx.dock);
+  const S = scale, W = screenCanvas.width;
+  const hero = dock === 'hero';
+  const leadRole = hero ? 'heroLead' : 'coachLead', bodyRole = hero ? 'heroBody' : 'coachBody';
+  const pad = hero ? Math.max(S * 3.5, 9 * uiDpr) : Math.max(S * 2.5, 6 * uiDpr);
+  const gap = hero ? Math.max(S * 1.6, 4 * uiDpr) : Math.max(S * 1.2, 3 * uiDpr);
+  const microH = rolePx('micro'), capH = rolePx('caption');
+  const w = Math.round(hero
+    ? Math.min(W - S * 6, Math.max(W * 0.86, rolePx('heroLead') * 16))
+    : Math.min(W - S * 8, Math.max(W * 0.78, rolePx('coachLead') * 24)));
+  const x = Math.round((W - w) / 2);
+  const tw = w - pad * 2;
+  const lead = coachSet(ctx, copy.lead, leadRole, tw);
+  const cap = copy.caption ? coachSet(ctx, copy.caption, bodyRole, tw) : null;
+  const h = Math.round(pad * 2 + microH + gap + setHeight(lead) + (cap ? gap * 0.6 + setHeight(cap) : 0));
+  const y = hero ? heroY(h)
+    : Math.round(dock === 'top' ? pillBox().floor + S * 1.5 : rosterTop() - S * 3 - h);
+  return { x, y, w, h, pad, gap, microH, capH, tw, lead, cap, dock, hero, leadRole, bodyRole };
+}
+
+/* ---- where the card rests ----
+   Home is the bottom of the maze, over the roster: the hero goes there on
+   the first freeze, so the player learns where the next word will be,
+   and there it stays. It leaves for the top, hung under the status pill,
+   only to uncover what the step is about -- and never fades to make way:
+   a card at a third of its strength is a card nobody can read, and the
+   moment something runs under it is the moment it is being read. What it
+   keeps clear of, by weight:
+     the ghost it is asking for (a full ring), the trap's two rings   100
+     the route in hand: its tip, and the ghost drawing it              10
+     a ghost the go step is watching walk (a thin ring)                 4
+     him, in the trap                                                   4
+   Anything else may pass under it. In scene one he is not what the card
+   is about, and a card that dodged him would never sit still; nor is the
+   fingertip, which is drawn to be seen beside the card, not instead of it.
+   The dock covering more gives way to the one covering less: at once if
+   what it covers is the ghost it asks for, and otherwise only once it
+   has rested DOCK_DWELL, so he running past can never set it swinging.
+   The dock it would move to must be clear by a margin the one it rests
+   at is not held to, and it goes home to the bottom only once the bottom
+   has stayed clear for DOCK_HOME with no route in hand. The trap's board
+   starts it at whichever dock suits, with no dwell (coachNotice). The
+   hero is not docked at all. Presentation only: the sim never asks where
+   the card is, and the hit tests read the resting rect of the dock it is
+   at, not the spring carrying it there. */
+const DOCK_DWELL = 45;   // ticks at a dock before it moves for anything less than its ghost
+const DOCK_HOME = 90;    // ticks the bottom stays clear before the card goes back
+const DOCK_MUST = 100;   // the weight the card may never rest on
+function coachKeepClear(scene) {
+  const S = scale, out = [], d = game.drill;
+  const step = d ? d.step : null;
+  const add = (x, y, r, w) => { const p = glassAt(x, y); out.push({ x: p.x, y: p.y, r, w }); };
+  const e = game.evader;
+  if (step === 'trap' && e && e.alive) add(e.x, e.y, S * 7, 4);
+  for (const { h, thin } of scene.rings) {
+    if (!thin) add(h.x, h.y, S * 10, DOCK_MUST);
+    else if (step === 'go') add(h.x, h.y, S * 9, 4);
+  }
+  if (scene.markers) for (const c of [6, 12]) add(tcx(c), tcy(1), S * 7, DOCK_MUST);
+  const a = Draw.active;
+  if (a) {
+    const t = a.tiles[a.tiles.length - 1];
+    add(tcx(t.c), tcy(t.r), S * 5, 10);
+    add(a.hunter.x, a.hunter.y, S * 7, 10);
+  }
+  return out;
+}
+// the weight of what a rect covers, each thing grown by m
+function dockCover(r, items, m) {
+  let n = 0;
+  for (const q of items) {
+    const k = q.r + m;
+    if (q.x + k > r.x && q.x - k < r.x + r.w && q.y + k > r.y && q.y - k < r.y + r.h) n += q.w;
+  }
+  return n;
+}
+function coachDock(ctx, copy, scene) {
+  const items = coachKeepClear(scene);
+  const cur = coachFx.dock, alt = cur === 'top' ? 'bottom' : 'top';
+  const here = dockCover(coachCardRect(ctx, copy, cur), items, 0);
+  const there = dockCover(coachCardRect(ctx, copy, alt), items, scale * 4);
+  if (cur !== 'top' || there > 0) coachFx.clearAt = uiClock;
+  const rested = uiClock - coachFx.dockAt >= DOCK_DWELL;
+  const move = (there < here && (here >= DOCK_MUST || rested))
+    || (cur === 'top' && there === 0 && !Draw.active && uiClock - coachFx.clearAt >= DOCK_HOME);
+  if (move) {
+    coachFx.dock = alt;
+    coachFx.dockAt = uiClock;
+    coachFx.clearAt = uiClock;
+  }
+  return coachFx.dock;
+}
+/* Where the card is drawn: its resting y and height, reached on the
+   shared spring from wherever it was when either last changed -- a dock
+   crossed, or a line gained or lost. The first frame of a practice is
+   simply there; its rise is drawCoachLayer's. */
+function coachGeo(r) {
+  const at = coachFx.geo;
+  const now = () => {
+    const k = springIn(uiClock - at.t);
+    return { y: at.y0 + (at.y1 - at.y0) * k, h: at.h0 + (at.h1 - at.h0) * k };
+  };
+  if (!at) coachFx.geo = { y0: r.y, h0: r.h, y1: r.y, h1: r.h, t: uiClock };
+  else if (Math.abs(at.y1 - r.y) > 0.5 || Math.abs(at.h1 - r.h) > 0.5) {
+    const from = now();
+    coachFx.geo = { y0: from.y, h0: from.h, y1: r.y, h1: r.h, t: uiClock };
+  } else return now();
+  return { y: coachFx.geo.y0, h: coachFx.geo.h0 };
+}
+
+/* ---- the hero goes home ----
+   The freeze that answers the hero sends it to its dock: from the middle
+   of the maze to the bottom over HERO_MOVE, shrinking to the docked
+   card's size as it goes. Not on the shared spring: that one is built to
+   arrive in a blink and would be there in a third of the trip, so this
+   is a plain cubic ease-out across the whole of it -- quick off the
+   middle, a long settle onto the dock, never past it. It sets off on the
+   freeze's own stamp, fx.enterAt, so it falls while the wave runs out
+   across the maze and lands as the roster's cards rise to meet it -- the
+   two halves of one moment, time stopping and the glass arriving. Its
+   words are step one's, scaled with the plate, until the last part of the
+   trip, where they cross-fade to step two's on the plate's own progress:
+   step one's are gone by the time it is four fifths of the way, step
+   two's are whole as it lands, and the two never stand at strength
+   together -- never a swap in mid-air at full size, and never a stale
+   line on a card already home. Under reduced motion it is simply at the
+   bottom, saying step two. Returns { from, k } -- the hero's rect as it
+   last stood, and the 0..1 of the trip, eased -- or null when there is
+   no trip under way. Presentation only; the hit tests read the dock's
+   resting rect throughout, so SKIP is where it will be, not where it is
+   flying. */
+const HERO_MOVE = 18;   // ticks: ~300ms from the middle to the dock
+const HERO_OLD = [0.55, 0.8];   // the trip's k over which step one's words leave
+const HERO_NEW = [0.7, 1];      // ...and step two's arrive
+function coachMove(ctx, r) {
+  if (r.hero || !coachFx.heroCopy) return null;
+  if (coachFx.heroAt === null) {
+    // the freeze's own stamp if this is its frame; a freeze under the manual goes when the manual shuts
+    coachFx.heroAt = game.phase === 'command' && uiClock - fx.enterAt < FX_SPRING
+      ? Math.min(uiClock, fx.enterAt) : uiClock;
+  }
+  const t = uiClock - coachFx.heroAt;
+  if (reducedMotion() || t >= HERO_MOVE) { coachFx.heroCopy = null; return null; }
+  return {
+    from: coachCardRect(ctx, coachFx.heroCopy, 'hero'),
+    k: 1 - Math.pow(1 - Math.max(0, t) / HERO_MOVE, 3),
+  };
+}
+// 0 before a, 1 after b, straight in between
+function ramp(u, a, b) { return Math.min(1, Math.max(0, (u - a) / (b - a))); }
+
+/* Anything of the board's the player must see, under a rect: him, a
+   ghost they can command, or the tip of the route in hand. The tips
+   still fade for it (the card moves instead: coachDock). `himOnly` asks
+   about him alone, for the hero toast (drawTipToast). */
+function coachUnder(r, himOnly) {
+  const S = scale;
+  const hit = (q, m) => q.x + m > r.x && q.x - m < r.x + r.w && q.y + m > r.y && q.y - m < r.y + r.h;
+  const e = game.evader;
+  if (e && e.alive && hit(glassAt(e.x, e.y), S * 7)) return true;
+  if (himOnly) return false;
+  if (game.hunters.some(h => h.isCommandable() && hit(glassAt(h.x, h.y), S * 7))) return true;
+  const a = Draw.active;
+  if (a) {
+    const t = a.tiles[a.tiles.length - 1];
+    if (hit(glassAt(tcx(t.c), tcy(t.r)), S * 4)) return true;
+  }
+  return false;
+}
+
+/* Does the card take a press here (display px d, board px x, y)? Not over
+   a ghost or an arrowhead. The card moves off what it is talking about,
+   but it still rests over a strip of maze, and a ghost it is not talking
+   about can stand there; a press on it is a press on the ghost, or "stop
+   and redraw whenever you like" would be a lie there. The hero is the
+   exception, all of it glass: it sits on the den by design, the three
+   ghosts under it cannot be seen through it, and its one instruction is
+   the freeze. A press on "Time is running." that also picked up a hidden
+   den ghost would start a route nobody asked for, and could walk the
+   player straight past the den's own lesson. Hover-safe reads, never
+   pickAt, which changes the selection just by asking. */
+function cardHolds(d, x, y) {
+  if (!coachUI.card || !inRect(d, coachUI.card)) return false;
+  if (coachHero()) return true;
+  return !Draw.poolAt(x, y).length && !(game.phase === 'command' && Draw.tipAt(game, x, y));
+}
+
+/* The card: PRACTICE, the five pips and SKIP along the top, then the lead
+   and its caption. It rises with the practice as the hero, goes home to
+   the bottom on the first freeze, drops away for the catch, and moves --
+   top or bottom of the maze -- rather than sit over what the step is
+   about (coachDock); a new line springs in where the old one stood, and
+   the plate springs to its new size with it. */
+function drawCoachLayer(ctx) {
+  coachUI.card = coachUI.skip = coachUI.play = null;
+  coachFx.drawn = null;
+  const d = game.drill;
+  if (!d || game.helpOpen) return;
+  if (d.step === 'graduate') {
+    if (coachFx.gradAt === null) coachFx.gradAt = uiClock;
+    drawGraduation(ctx);
+    return;
+  }
+  const copy = drillCopy();
+  const scene = coachScene();
+  if (game.phase === 'capture') {
+    // the catch has the board to itself
+    if (coachFx.goneAt === null) coachFx.goneAt = uiClock;
+    const e = easeOut(uiClock - coachFx.goneAt);
+    if (e < 1) drawCoachCard(ctx, copy, scene, 1 - e, e * CARD_RISE * scale, false);
+    return;
+  }
+  coachFx.goneAt = null;
+  drawCoachMarks(ctx, scene);
+  if (!coachHero()) coachDock(ctx, copy, scene);
+  const k = springIn(uiClock - coachFx.startedAt);
+  drawCoachCard(ctx, copy, scene, Math.min(1, Math.max(0, k)), (1 - k) * CARD_RISE * scale, true);
+}
+
+function drawCoachCard(ctx, copy, scene, a, dy, live) {
+  const S = scale;
+  const d = game.drill;
+  const r = coachCardRect(ctx, copy);
+  if (r.hero) { coachFx.heroCopy = copy; coachFx.heroAt = null; }
+  const mv = coachMove(ctx, r);
+  /* The plate: on its way home from the middle, or at its dock on the
+     dock's own spring. The hero has no spring of its own, and the dock's
+     starts from rest where the trip home lands. */
+  let at;
+  if (mv) {
+    const f = mv.from, mix = (p, q) => p + (q - p) * mv.k;
+    at = { x: mix(f.x, r.x), y: mix(f.y, r.y), w: mix(f.w, r.w), h: mix(f.h, r.h),
+      pad: mix(f.pad, r.pad), gap: mix(f.gap, r.gap) };
+    coachFx.geo = null;
+  } else if (r.hero) {
+    at = { x: r.x, y: r.y, w: r.w, h: r.h, pad: r.pad, gap: r.gap };
+    coachFx.geo = null;
+  } else {
+    const g = coachGeo(r);
+    at = { x: r.x, y: g.y, w: r.w, h: g.h, pad: r.pad, gap: r.gap };
+  }
+  if (copy.lead !== coachFx.lead) { coachFx.lead = copy.lead; coachFx.leadAt = uiClock; }
+  if (copy.caption !== coachFx.cap) { coachFx.cap = copy.caption; coachFx.capAt = uiClock; }
+
+  // a missed trap reloads with the card shaking its head, as a refused PLAY does
+  const since = uiClock - coachFx.failAt;
+  const dx = since < 14 && !reducedMotion() ? Math.sin(since * 1.9) * (1 - since / 14) * S * 1.6 : 0;
+  const x = at.x + dx, y = at.y + dy, w = at.w, h = at.h, pad = at.pad, rad = S * 3;
+  coachFx.drawn = { x, y, w, h };
+  ctx.save();
+  ctx.globalAlpha = a;
+  glassPlate(ctx, x, y, w, h, rad, 1);
+  ctx.save();
+  ctx.strokeStyle = scene.failing ? TOKENS.warn : TOKENS.line;
+  ctx.globalAlpha *= scene.failing ? 0.95 : 0.5;
+  ctx.lineWidth = scene.failing ? Math.max(1.5 * uiDpr, S * 0.4) : uiDpr;
+  plate(ctx, x, y, w, h, rad);
+  ctx.stroke();
+  ctx.restore();
+  ctx.textBaseline = 'middle';
+
+  /* The top row. SKIP is a quiet word at the right, lit once the player
+     has been stuck a while; after four missed traps it is the way on, and
+     filled like one. The pips sit in the middle -- or wherever SKIP
+     leaves room -- and PRACTICE gives way first if the row is crowded.
+     The hero sets it in the same type as the docked card, so on the way
+     home it simply travels with the plate. */
+  const rowY = y + pad + r.microH / 2;
+  const label = copy.skip;
+  const go = label !== 'SKIP ›';
+  const skipW = (ww, pp) => Math.min(ww * 0.5, roleWidth(ctx, label, 'caption') + pp * 1.5);
+  const sw = skipW(w, pad);
+  const sh = r.capH + at.gap * 1.5;
+  const sx = x + w - pad * 0.5 - sw, sy = rowY - sh / 2;
+  const look = ctlLook('skip');
+  ctx.save();
+  pressIn(ctx, look, sx + sw / 2, rowY);
+  if (go) glassPlate(ctx, sx, sy, sw, sh, sh / 2, 0, TOKENS.ok);
+  ctlTint(ctx, look, sx, sy, sw, sh, sh / 2);
+  if (!go && scene.skipLit) {
+    ctx.save();
+    ctx.strokeStyle = TOKENS.line;
+    ctx.globalAlpha *= 0.6;
+    ctx.lineWidth = uiDpr;
+    plate(ctx, sx, sy, sw, sh, sh / 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.textAlign = 'center';
+  coachLine(ctx, label, sx + sw / 2, rowY, 'caption', sw - pad * 0.5,
+    go ? TOKENS.onColor : look.hover || look.pressed || scene.skipLit ? TOKENS.ink : TOKENS.muted);
+  ctx.restore();
+
+  const pr = Math.max(1.5 * uiDpr, S * 0.75), pg = Math.max(3 * uiDpr, S * 1.4);
+  const pipsW = COACH_STEPS.length * pr * 2 + (COACH_STEPS.length - 1) * pg;
+  let pcx = x + w / 2;
+  if (pcx + pipsW / 2 > sx - pg * 2) pcx = sx - pg * 2 - pipsW / 2;
+  const practiceW = roleWidth(ctx, 'PRACTICE', 'micro');
+  if (x + pad + practiceW + pg * 2 <= pcx - pipsW / 2) {
+    ctx.textAlign = 'left';
+    fitText(ctx, 'PRACTICE', null, x + pad, rowY, 'micro', practiceW + S, TOKENS.muted);
+  }
+  const cur = COACH_STEPS.indexOf(d.step);
+  const kPip = springIn(uiClock - coachFx.stepAt);
+  COACH_STEPS.forEach((step, i) => {
+    const px = pcx - pipsW / 2 + pr + i * (pr * 2 + pg);
+    const done = i < cur || (step === 'den' && d.denDone);
+    ctx.save();
+    ctx.beginPath();
+    if (i === cur && !done) {
+      ctx.strokeStyle = TOKENS.ink;
+      ctx.lineWidth = Math.max(uiDpr, S * 0.35);
+      ctx.arc(px, rowY, pr * (0.6 + 0.6 * kPip), 0, Math.PI * 2);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = done ? TOKENS.ink : TOKENS.track;
+      ctx.globalAlpha *= done ? 0.85 : 1;
+      ctx.arc(px, rowY, done ? pr : pr * 0.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  });
+
+  /* The lines. Each springs up into place when it changes; the lead
+     breathes while the maze pulses, so the two read as one call. On the
+     way home the hero's lines shrink with the plate and give way, late,
+     to step two's, which land with it. */
+  const leadTop = rowY + r.microH / 2 + at.gap;
+  const box = { x: x + pad, y: leadTop, w: w - pad * 2, h: y + h - pad - leadTop };
+  if (mv) {
+    drawCardLines(ctx, mv.from, coachFx.heroCopy, box, { a: 1 - ramp(mv.k, HERO_OLD[0], HERO_OLD[1]), fit: true });
+    drawCardLines(ctx, r, copy, box, { a: ramp(mv.k, HERO_NEW[0], HERO_NEW[1]), fit: true });
+  } else {
+    const breath = scene.breathe && !reducedMotion()
+      ? 0.72 + 0.28 * (0.5 + 0.5 * Math.cos(uiClock * Math.PI * 2 / RIPPLE_EVERY)) : 1;
+    drawCardLines(ctx, r, copy, box, { a: 1, breath,
+      kl: springIn(uiClock - coachFx.leadAt), kc: springIn(uiClock - coachFx.capAt) });
+  }
+  ctx.restore();
+
+  /* The rects are the card's at rest -- at its dock, or the hero's --
+     whatever the trip home, the spring, the rise or the shake are doing:
+     SKIP must not slip out from under a finger because the card is on
+     its way somewhere. */
+  if (live) {
+    const rsw = skipW(r.w, r.pad), rsh = r.capH + r.gap * 1.5;
+    coachUI.card = { x: r.x, y: r.y, w: r.w, h: r.h };
+    coachUI.skip = { x: r.x + r.w - r.pad * 0.5 - rsw, y: r.y + r.pad + r.microH / 2 - rsh / 2, w: rsw, h: rsh };
+  }
+}
+
+/* A card's two sentences as `f` (a coachCardRect) set them, in `box`
+   under the top row: from its left edge at a dock, centred as the hero.
+   `o.kl` and `o.kc` spring each line in when it changes, and `o.breath`
+   is the lead's. With `o.fit` -- the plate in flight -- the set is
+   scaled, never set afresh, to whatever the plate holds this frame. The
+   hero's body is its instruction, so it is in ink, as a hint is. */
+function drawCardLines(ctx, f, copy, box, o) {
+  const a = o.a === undefined ? 1 : o.a;
+  if (a <= 0.004) return;
+  const S = scale;
+  const kl = o.kl === undefined ? 1 : o.kl, kc = o.kc === undefined ? 1 : o.kc;
+  const capGap = f.gap * 0.6;
+  const bh = setHeight(f.lead) + (f.cap ? capGap + setHeight(f.cap) : 0);
+  const s = o.fit ? Math.min(1, box.w / f.tw, box.h / bh) : 1;
+  ctx.save();
+  ctx.globalAlpha *= a;
+  ctx.translate(f.hero ? box.x + box.w / 2 : box.x, box.y);
+  if (s !== 1) ctx.scale(s, s);
+  ctx.textAlign = f.hero ? 'center' : 'left';
+  ctx.save();
+  ctx.globalAlpha *= Math.min(1, Math.max(0, kl)) * (o.breath === undefined ? 1 : o.breath);
+  drawSet(ctx, f.lead, 0, setStep(f.lead) / 2 + (1 - kl) * S * 1.5, f.leadRole, TOKENS.ink);
+  ctx.restore();
+  if (f.cap) {
+    const capY = setHeight(f.lead) + capGap + setStep(f.cap) / 2;
+    ctx.save();
+    ctx.globalAlpha *= Math.min(1, Math.max(0, kc));
+    drawSet(ctx, f.cap, 0, capY + (1 - kc) * S * 1.5, f.bodyRole,
+      f.hero || copy.hint ? TOKENS.ink : TOKENS.body);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/* GOT HIM: the whole game in one line over the finished catch, and the
+   way into a real one. It grows out of the spot where he was caught, on
+   the shared spring, over the machine dimmed by half. It never moves on
+   by itself -- a reader is never yanked into READY -- and any press is
+   PLAY, so there is nothing to aim at; the button is there to be seen. */
+/* The sheet at rest, display px: the plate, its padding, the button, its
+   sentences as coachSet wraps them, and the centre line of each row (of
+   a set's first line). Sized from the type in use, like the card, and as
+   tall as its sentences come out. */
+function gradSheetRect(ctx, copy) {
+  ctx = ctx || screenCtx;
+  copy = copy || drillCopy();
+  const S = scale, W = screenCanvas.width, H = screenCanvas.height;
+  const pad = Math.max(S * 4, 10 * uiDpr), gap = Math.max(S * 2, 5 * uiDpr);
+  const headH = rolePx('head'), labH = rolePx('title');
+  const btnH = Math.max(S * 11, labH * 2), btnW = Math.max(S * 34, labH * 6);
+  const w = Math.round(Math.min(W - S * 6, Math.max(W * 0.86, rolePx('coachLead') * 26)));
+  const x = Math.round((W - w) / 2);
+  const tw = w - pad * 2;
+  const lead = coachSet(ctx, copy.lead, 'coachLead', tw);
+  const cap = coachSet(ctx, copy.caption, 'coachBody', tw);
+  const micro = coachSet(ctx, copy.micro, 'coachBody', tw);
+  const h = pad * 2 + headH + setHeight(lead) + setHeight(cap) + btnH + setHeight(micro) + gap * 4.2;
+  const y = Math.round((H - h) / 2);
+  let cy = y + pad + headH / 2;
+  const ys = { head: cy };
+  cy += headH / 2 + gap; ys.lead = cy + setStep(lead) / 2;
+  cy += setHeight(lead) + gap * 0.6; ys.cap = cy + setStep(cap) / 2;
+  cy += setHeight(cap) + gap * 1.6; ys.btn = cy;
+  cy += btnH + gap; ys.micro = cy + setStep(micro) / 2;
+  return { x, y, w, h, pad, ys, btnW, btnH, lead, cap, micro };
+}
+function drawGraduation(ctx) {
+  const S = scale, W = screenCanvas.width, H = screenCanvas.height;
+  const copy = drillCopy();
+  const k = springIn(uiClock - coachFx.gradAt);
+  const a = Math.min(1, Math.max(0, k));
+  ctx.save();
+  ctx.globalAlpha = 0.5 * a;
+  ctx.fillStyle = TOKENS.scrim;
+  ctx.fillRect(0, 0, W, H);
+  const g = gradSheetRect(ctx, copy);
+  const { x, y, w, h, pad, ys, btnW, btnH } = g;
+  const cx = W / 2, mid = y + h / 2;
+  // the button's resting rect is the one hovered and pressed, whatever the spring is doing
+  const bx = cx - btnW / 2;
+  coachUI.play = { x: bx, y: ys.btn, w: btnW, h: btnH };
+
+  ctx.globalAlpha = a;
+  const o = game.evader ? glassAt(game.evader.x, game.evader.y) : { x: cx, y: mid };
+  const sc = 0.5 + 0.5 * k;
+  ctx.translate(o.x + (cx - o.x) * k, o.y + (mid - o.y) * k);
+  ctx.scale(sc, sc);
+  ctx.translate(-cx, -mid);
+
+  glassPlate(ctx, x, y, w, h, S * 3, 2);
+  ctx.save();
+  ctx.strokeStyle = TOKENS.line;
+  ctx.globalAlpha *= 0.6;
+  ctx.lineWidth = uiDpr;
+  plate(ctx, x, y, w, h, S * 3);
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const tw = w - pad * 2;
+  fitText(ctx, copy.head, null, cx, ys.head, 'head', tw, TOKENS.ink);
+  drawSet(ctx, g.lead, cx, ys.lead, 'coachLead', TOKENS.ink);
+  drawSet(ctx, g.cap, cx, ys.cap, 'coachBody', TOKENS.body);
+
+  const look = ctlLook('grad');
+  const by = ys.btn;
+  ctx.save();
+  pressIn(ctx, look, cx, by + btnH / 2);
+  glassPlate(ctx, bx, by, btnW, btnH, btnH / 2, 0, TOKENS.ok);
+  ctlTint(ctx, look, bx, by, btnW, btnH, btnH / 2);
+  // the word and PLAY's own triangle, centred as a pair
+  const t = btnH * 0.16;
+  const lw = roleWidth(ctx, copy.button, 'title');
+  const span = lw + t * 3;
+  ctx.textAlign = 'left';
+  fitText(ctx, copy.button, null, cx - span / 2, by + btnH / 2, 'title', btnW, TOKENS.onColor);
+  ctx.fillStyle = TOKENS.onColor;
+  playGlyph(ctx, cx + span / 2 - t, by + btnH / 2, t);
+  ctx.restore();
+  ctx.textAlign = 'center';
+  drawSet(ctx, g.micro, cx, ys.micro, 'coachBody', TOKENS.muted);
+  ctx.restore();
+}
+
+/* ---- after the practice: the tips ----
+   A real game teaches the rest the moment it happens, once ever each: a
+   small glass toast under the status pill, in the coach card's material
+   with none of its controls. It takes no press, stops nothing and moves
+   nothing. Every trigger is read off the game as it stands, from here,
+   and the game never learns a toast was up. What has been shown is one
+   number in the browser, gpTips, a bit a lesson:
+     freeze  a first real game: time stops on your click, and the den
+             waits on your paths. The one toast that is a hero, centred
+             over the den as the practice's first card is. Up from READY
+             and gone on the first freeze the player makes. Unlike the
+             rest, showing it does not spend it: a round that never froze
+             gets it back
+     fright  the first time his energizer turns a ghost on the board blue
+     eaten   the first ghost he eats
+     camp    the first freeze the camp limit makes, with a nod from its chip
+     beads   the first frozen frame with white beads on it
+   None of them names a pointer but the first, so the idioms share them.
+   The practice and the attract demo never see any of it. */
+const TIP = { freeze: 1, fright: 2, eaten: 4, camp: 8, beads: 16 };
+const TIP_SHOW = 210;      // uiClock ticks a tip stays: 3.5s
+const TIP_G1_PLAY = 480;   // ticks of a round's play the freeze toast waits for a freeze
+const TIP_PULSE = 48;      // the camp chip's one swell, after it has settled
+let tipBits = 0;
+function loadTips() {
+  // Number(null) is 0 and garbage is NaN, which |0 also makes 0: nothing shown
+  try { tipBits = Number(localStorage.getItem('gpTips')) | 0; } catch (e) { tipBits = 0; }
+}
+function markTip(bit) {
+  if (tipBits & bit) return;
+  tipBits |= bit;
+  try { localStorage.setItem('gpTips', String(tipBits)); } catch (e) {}
+}
+// handFreeze's report: in a real game, the click has been found
+function tipFreezeSeen() {
+  if (!game.drill && !game.demo) markTip(TIP.freeze);
+}
+
+/* Presentation state, uiClock throughout:
+     active   the tip on the glass, a TIP key, or null
+     at       when it went up
+     name     the camp tip's ghost, fixed as it went up
+     leaving  { kind, name, at }: the one on its way out
+     nudgeAt  a press in READY the freeze toast answered
+     campAt   the camp tip went up, for the chip's swell
+     alpha, alphaAt  the eased fade while something of the board is under it
+     rect     where it rests, display px -- for the tests; it takes no press */
+const tipUI = { active: null, at: -1e9, name: '', leaving: null, nudgeAt: -1e9, campAt: -1e9,
+  alpha: 1, alphaAt: -1e9, rect: null };
+
+// a round of a real game: not the title, not the demo, not the practice
+function realRound() {
+  return !game.drill && !game.demo
+    && game.phase !== 'attract' && game.phase !== 'gameover' && game.phase !== 'boot';
+}
+/* The freeze toast's whole rule, pure, so the board's own GRAB A GHOST
+   can stand aside for it without waiting on a frame. */
+function g1Wanted() {
+  if (!realRound() || (tipBits & TIP.freeze)) return false;
+  return game.phase === 'ready'
+    || (game.phase === 'play' && game.tick - game.playTick0 < TIP_G1_PLAY);
+}
+// the moment a lesson happens, first match wins; null when none is due
+function tipDue() {
+  if (!realRound() || game.helpOpen) return null;
+  const fresh = bit => !(tipBits & bit);
+  if (fresh(TIP.fright) && game.frightT > 0
+      && game.hunters.some(h => h.state === 'active' && !h.frightImmune)) return 'fright';
+  if (fresh(TIP.eaten) && game.hunters.some(h => h.state === 'dissolving' || h.isEyes())) return 'eaten';
+  if (fresh(TIP.camp) && game.phase === 'command' && stalledHunter()) return 'camp';
+  if (fresh(TIP.beads) && game.phase === 'command'
+      && hotBeadsNow().some(l => l && l.hot.size)) return 'beads';
+  return null;
+}
+/* Once a frame, from render. One toast at a time, and the freeze toast
+   first: a player who has not found the click has no use yet for blue
+   ghosts. A lesson that comes due behind it waits, and is still there
+   if its moment is -- fright lasts, eyes last, a camp freeze lasts. */
+function tipTick() {
+  const T = tipUI;
+  if (T.active === 'freeze') {
+    if (g1Wanted()) return;
+    tipLeave();
+  } else if (T.active) {
+    if (uiClock - T.at < TIP_SHOW && realRound()) return;
+    tipLeave();
+  }
+  if (T.leaving && uiClock - T.leaving.at < FX_EXIT) return;
+  if (g1Wanted()) { tipStart('freeze'); return; }
+  const due = tipDue();
+  if (due) { tipStart(due); markTip(TIP[due]); }
+}
+function tipStart(kind) {
+  tipUI.active = kind;
+  tipUI.at = uiClock;
+  tipUI.name = kind === 'camp' ? stalledHunter().def.name : '';
+  if (kind === 'camp') tipUI.campAt = uiClock;
+}
+function tipLeave() {
+  tipUI.leaving = { kind: tipUI.active, name: tipUI.name, at: uiClock };
+  tipUI.active = null;
+}
+// a press READY will not take yet, answered by the toast that asked for it
+function tipNudge() {
+  if (tipUI.active === 'freeze') tipUI.nudgeAt = uiClock;
+}
+/* The camp chip's swell, 0..1: once the chip has risen into place, a
+   single breath in and out. Held still, at a glance's worth, under
+   reduced motion. */
+function campPulse() {
+  const t = uiClock - tipUI.campAt - FX_SPRING;
+  if (t < 0 || t >= TIP_PULSE) return 0;
+  return reducedMotion() ? 0.6 : Math.sin(Math.PI * t / TIP_PULSE);
+}
+
+function tipCopy(kind, name) {
+  switch (kind) {
+    case 'freeze': return {
+      lead: (touchMode ? 'Tap' : 'Click') + ' anywhere to stop time.',
+      caption: '3 more ghosts wait in the den for your paths.' };
+    case 'fright': return {
+      lead: 'Blue ghosts can be eaten.', caption: 'Keep them clear until they flash back.' };
+    case 'eaten': return {
+      lead: 'Eaten ghosts wait 5 seconds in the den.', caption: 'Then draw them back out.' };
+    case 'camp': return {
+      // a name in a sentence is a name, not a label: EMBER reads Ember
+      lead: name.charAt(0) + name.slice(1).toLowerCase() + ' waited too long.',
+      caption: 'Give it a path. The camp limit chip sets how long.' };
+    case 'beads': return {
+      lead: 'White beads: these two arrive together.', caption: "That's a pincer." };
+  }
+  return { lead: '', caption: '' };
+}
+
+/* The toast at rest, display px: as wide as its words, within the
+   card's own limits, and hung just under the pill's row -- which is the
+   maze's top edge, so it drops out of the HUD the way the pill does. Its
+   two sentences are set as the card's are, wrapping at the widest the
+   toast may be; the widest line they come out at is the toast's width.
+   The freeze toast is the exception: it is a first game's hero, the
+   practice's first card without its controls -- centred on the glass in
+   the hero's type, its sentences centred, in the open maze above the den
+   it talks about (heroToastY). It has no next instruction to go and wait
+   for, so it never docks; it fades where it stands. */
+function tipRect(ctx, copy, kind) {
+  const S = scale, W = screenCanvas.width;
+  if (kind === 'freeze') {
+    const pad = Math.max(S * 3.5, 9 * uiDpr), gap = Math.max(S * 1.6, 4 * uiDpr);
+    const most = Math.round(Math.min(W - S * 6, Math.max(W * 0.86, rolePx('heroLead') * 16)));
+    const lead = coachSet(ctx, copy.lead, 'heroLead', most - pad * 2);
+    const cap = coachSet(ctx, copy.caption, 'heroBody', most - pad * 2);
+    const w = Math.ceil(Math.min(most, Math.max(W * 0.6, Math.max(lead.w, cap.w) + pad * 2)));
+    const h = Math.round(pad * 2 + setHeight(lead) + gap + setHeight(cap));
+    return { x: Math.round((W - w) / 2), y: heroToastY(h), w, h, pad, gap, lead, cap, hero: true,
+      leadRole: 'heroLead', bodyRole: 'heroBody' };
+  }
+  const pad = Math.max(S * 2.5, 6 * uiDpr), gap = Math.max(S, 2.5 * uiDpr);
+  const most = Math.round(Math.min(W - S * 8, Math.max(W * 0.78, rolePx('coachLead') * 24)));
+  const lead = coachSet(ctx, copy.lead, 'coachLead', most - pad * 2);
+  const cap = coachSet(ctx, copy.caption, 'coachBody', most - pad * 2);
+  const w = Math.ceil(Math.min(most, Math.max(W * 0.4, Math.max(lead.w, cap.w) + pad * 2)));
+  const h = Math.round(pad * 2 + setHeight(lead) + gap + setHeight(cap));
+  return { x: Math.round((W - w) / 2), y: Math.round(pillBox().floor + S * 1.5), w, h, pad, gap, lead, cap,
+    hero: false, leadRole: 'coachLead', bodyRole: 'coachBody' };
+}
+/* k the entrance spring, out the exit's progress. He or the route's tip
+   under it and it fades back: the board comes first. The card moves out
+   of the way instead, but a toast is up for three seconds and takes no
+   press, and there is nowhere else under the pill for it to go. The hero
+   toast gives way to him alone: it is the round's one instruction, and a
+   ghost walking under it is a ghost it is asking the player to stop. */
+function drawTipToast(ctx, kind, name, k, out) {
+  const S = scale;
+  const copy = tipCopy(kind, name);
+  const r = tipRect(ctx, copy, kind);
+  const a = Math.min(1, Math.max(0, k)) * (1 - out);
+  const target = coachUnder(r, r.hero) ? COACH_FADE : 1;
+  if (reducedMotion()) tipUI.alpha = target;
+  else tipUI.alpha += (target - tipUI.alpha) * (1 - Math.exp(-Math.max(0, uiClock - tipUI.alphaAt) / 3));
+  tipUI.alphaAt = uiClock;
+  if (a <= 0.01) return r;
+  // a press READY would not take: the toast swells a little and settles
+  const since = uiClock - tipUI.nudgeAt;
+  const swell = kind === 'freeze' && !out && since < FX_SPRING ? 1 + 0.04 * (1 - springIn(since)) : 1;
+  const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+  ctx.save();
+  ctx.globalAlpha = a * tipUI.alpha;
+  ctx.translate(cx, cy - (1 - k) * S * 3);
+  ctx.scale(swell, swell);
+  ctx.translate(-cx, -cy);
+  const rad = S * 3;
+  glassPlate(ctx, r.x, r.y, r.w, r.h, rad, 1);
+  ctx.save();
+  ctx.strokeStyle = TOKENS.line;
+  ctx.globalAlpha *= 0.5;
+  ctx.lineWidth = uiDpr;
+  plate(ctx, r.x, r.y, r.w, r.h, rad);
+  ctx.stroke();
+  ctx.restore();
+  ctx.textAlign = r.hero ? 'center' : 'left';
+  ctx.textBaseline = 'middle';
+  const tx = r.hero ? cx : r.x + r.pad;
+  const leadY = r.y + r.pad + setStep(r.lead) / 2;
+  drawSet(ctx, r.lead, tx, leadY, r.leadRole, TOKENS.ink);
+  drawSet(ctx, r.cap, tx, r.y + r.pad + setHeight(r.lead) + r.gap + setStep(r.cap) / 2,
+    r.bodyRole, TOKENS.body);
+  ctx.restore();
+  return r;
+}
+
+/* The game-over chip. A game that ended without a single catch is a
+   player who never found the verb, and the game over is the one moment
+   they are listening: so the practice is offered, bottom centre, where
+   the roster would stand. Once per page load -- a second catchless game
+   over is somebody's choice, and the manual still has the way in. */
+const GAMEOVER_PRACTICE = 'STUCK? TRY THE 1-MINUTE PRACTICE ›';
+const gameOverUI = { practice: null };               // display px, while it is up
+const gameOverFx = { live: false, spent: false, at: -1e9 };
+function gameOverChipUp() {
+  if (game.phase !== 'gameover') { gameOverFx.live = false; return false; }
+  if (!gameOverFx.live && !gameOverFx.spent && game.catches === 0) {
+    gameOverFx.live = gameOverFx.spent = true;
+    gameOverFx.at = uiClock;
+  }
+  return gameOverFx.live;
+}
+function drawGameOverChip(ctx) {
+  const S = scale, W = screenCanvas.width;
+  const h = Math.round(Math.max(S * 9, rolePx('caption') * 2.2));
+  const pad = h * 0.6;
+  const w = Math.round(Math.min(W - S * 12,
+    Math.max(W * 0.5, roleWidth(ctx, GAMEOVER_PRACTICE, 'caption') + pad * 2)));
+  const x = Math.round((W - w) / 2);
+  const y = Math.round(rosterTop() + (S * 13 - h) / 2);
+  gameOverUI.practice = { x, y, w, h };   // the resting rect, whatever the spring is doing
+  const k = springIn(uiClock - gameOverFx.at);
+  const look = ctlLook('retry');
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, Math.max(0, k));
+  ctx.translate(0, (1 - k) * CARD_RISE * S);
+  pressIn(ctx, look, x + w / 2, y + h / 2);
+  glassPlate(ctx, x, y, w, h, h / 2, 1);
+  ctlTint(ctx, look, x, y, w, h, h / 2);
+  ctx.save();
+  ctx.strokeStyle = TOKENS.line;
+  ctx.globalAlpha *= look.hover ? 0.9 : 0.6;
+  ctx.lineWidth = uiDpr;
+  plate(ctx, x, y, w, h, h / 2);
+  ctx.stroke();
+  ctx.restore();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  coachLine(ctx, GAMEOVER_PRACTICE, x + w / 2, y + h / 2, 'caption', w - pad, TOKENS.ink);
+  ctx.restore();
+}
+
+/* After the coach, before the manual: the toasts over the board, and
+   the chip over a game over. Rects are nulled first and set only while
+   drawn, as the coach's are. */
+function drawTipLayer(ctx) {
+  gameOverUI.practice = null;
+  tipUI.rect = null;
+  const T = tipUI;
+  if (T.leaving) {
+    const e = easeOut(uiClock - T.leaving.at);
+    if (e < 1) drawTipToast(ctx, T.leaving.kind, T.leaving.name, 1, e);
+    else T.leaving = null;
+  }
+  if (T.active) T.rect = drawTipToast(ctx, T.active, T.name, springIn(uiClock - T.at), 0);
+  if (gameOverChipUp()) drawGameOverChip(ctx);
+}
+
 /* The pincer read, heard. Only on a change, only for the route in hand, at
    most once per PINCER_GAP, and through uiBlip, so mute silences it. A
    route picked up already meeting someone starts from there unannounced,
@@ -5924,7 +8404,9 @@ function listenForPincer() {
    glass carries one small ? chip in the corner, and this pocket manual
    behind it: seven rules, each with a little drawn figure. Documentation
    is for the player, so it renders in the player's layer. */
-const helpUI = { btn: null, close: null, panel: null };
+const helpUI = { btn: null, close: null, panel: null, practice: null };
+// the manual's own presentation state: when PRACTICE last asked END THIS GAME?
+const helpFx = { confirmAt: -1e9 };
 // the ? chip's centre, in native px of the whole canvas (HUD rows included)
 const HELP_CHIP = { x: NATIVE_W - 7, y: 7, r: 4.2 };
 
@@ -6194,9 +8676,15 @@ function drawHelpLayer(ctx) {
   const r = S * HELP_CHIP.r;
   const bcx = HELP_CHIP.x * S, bcy = HELP_CHIP.y * S;
   helpUI.btn = { x: bcx - r - S, y: bcy - r - S, w: (r + S) * 2, h: (r + S) * 2 };
+  helpUI.practice = null;   // set again below, only while the manual is up
+  /* ...and once more as the practice's GOT HIM sheet lands, because its
+     last line points here: a single swell, not a breath. */
+  const landed = game.drill && coachFx.gradAt !== null ? uiClock - coachFx.gradAt : -1;
+  const swell = !game.helpOpen && landed >= 0 && landed < GRAD_SWELL;
   const attention = !game.helpOpen
-    && (game.phase === 'attract' || (game.hint && game.phase === 'play' && game.tick < 1200));
-  const pulse = attention ? 0.65 + 0.35 * Math.sin(uiFrame * 0.1) : 0.5;
+    && (game.phase === 'attract' || hintWindowOpen() || swell);
+  const pulse = swell ? 0.5 + 0.5 * Math.sin(Math.PI * landed / GRAD_SWELL)
+    : attention ? 0.65 + 0.35 * Math.sin(uiFrame * 0.1) : 0.5;
   const chip = ctlLook('help');
   ctx.save();
   pressIn(ctx, chip, bcx, bcy);
@@ -6236,12 +8724,41 @@ function drawHelpLayer(ctx) {
   ctx.stroke();
   ctx.globalAlpha = 1;
 
-  ctx.textAlign = 'left';
-  fitText(ctx, 'HOW TO PLAY', null, px + S * 6, py + S * 7, 'head', pw - S * 20, TOKENS.ink);
-
   const cw = S * 7;
   helpUI.close = { x: px + pw - cw - S * 3, y: py + S * 3.5, w: cw, h: cw };
   const cc = helpUI.close;
+
+  /* PRACTICE, a quiet capsule left of the X: the way back into the
+     lesson for anyone who skipped it or wants it again. Its question,
+     END THIS GAME?, is set in amber on the same capsule; the title gives
+     up room to it rather than the other way round. */
+  const prLabel = practiceLabel();
+  const prAsk = prLabel === 'END THIS GAME?';
+  const prLook = ctlLook('practice');
+  const prH = Math.max(cw, rolePx('caption') * 1.9);
+  const prPad = Math.max(S * 2.5, 6 * uiDpr);
+  const titleRoom = roleWidth(ctx, 'HOW TO PLAY', 'head');
+  const pwMax = Math.max(S * 20, cc.x - S * 3 - (px + S * 6) - Math.min(titleRoom, pw * 0.4));
+  const prW = Math.min(pwMax, roleWidth(ctx, prLabel, 'caption') + prPad * 2);
+  const pr = { x: cc.x - S * 2 - prW, y: cc.y + cw / 2 - prH / 2, w: prW, h: prH };
+  helpUI.practice = pr;
+  ctx.save();
+  pressIn(ctx, prLook, pr.x + pr.w / 2, pr.y + prH / 2);
+  ctlTint(ctx, prLook, pr.x, pr.y, pr.w, prH, prH / 2);
+  ctx.strokeStyle = prAsk ? TOKENS.warn : TOKENS.line;
+  ctx.globalAlpha = prAsk ? 0.95 : prLook.hover ? 0.8 : 0.5;
+  ctx.lineWidth = prAsk ? Math.max(1.5 * uiDpr, S * 0.4) : uiDpr;
+  plate(ctx, pr.x, pr.y, pr.w, prH, prH / 2);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'center';
+  coachLine(ctx, prLabel, pr.x + pr.w / 2, pr.y + prH / 2, 'caption', pr.w - prPad,
+    prAsk ? TOKENS.warn : prLook.hover || prLook.pressed ? TOKENS.ink : '#9fb4ff');
+  ctx.restore();
+
+  ctx.textAlign = 'left';
+  fitText(ctx, 'HOW TO PLAY', null, px + S * 6, py + S * 7, 'head', pr.x - S * 3 - (px + S * 6), TOKENS.ink);
+
   const x = ctlLook('close');
   ctx.save();
   pressIn(ctx, x, cc.x + cw / 2, cc.y + cw / 2);
@@ -6296,13 +8813,18 @@ function drawHelpLayer(ctx) {
 
 /* -------------------------------- boot ---------------------------------- */
 
-let mazeLayerDim, mazeLayerWhite;
+let mazeLayerWhite;
 
 function boot() {
   buildSprites();
   setBoard(0);   // builds maze, wall distance field, and the wall layers
   try { game.high = parseInt(localStorage.getItem('ghostProtocolHigh') || '0', 10) || 0; } catch (e) {}
   loadCampChoice();
+  loadTips();
+  // ?tutorial in the link: the next title-screen press is the practice,
+  // whatever this browser remembers -- the way to hand a friend the lesson
+  // (the parameter itself: ?utm_campaign=tutorial is somebody else's word)
+  try { forceDrill = TUTORIAL_PARAM.test(location.search); } catch (e) {}
 
   screenCanvas = document.getElementById('screen');
   native = makeCanvas(NATIVE_W, NATIVE_H);

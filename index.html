@@ -137,6 +137,25 @@
   body.frozen #hint-idle { opacity: 0; transition: opacity 160ms ease-out; }
   body.frozen #hint-live { opacity: 1; transition: opacity 160ms ease-out; }
   body.blocked #hint-live { color: #ffb040; }
+  /* The practice keeps its coach's sentence up in live play as well as
+     frozen. It is a sentence, in sentence case, so it is set a size up
+     and untracked, as prose is. Its lines run longer than the game's, so
+     they may wrap -- two balanced lines hung from the top of the slot the
+     resting line already holds open, so a second line spills down into
+     the page and never up onto the glass, and the slot never changes
+     size under a finger. */
+  body.coaching #hint-idle { opacity: 0; transition: opacity 160ms ease-out; }
+  body.coaching #hint-live {
+    opacity: 1;
+    transition: opacity 160ms ease-out;
+    align-items: flex-start;
+    white-space: normal;
+    font-size: 15px;
+    letter-spacing: 0;
+    line-height: 1.25;
+    text-align: center;
+    text-wrap: balance;
+  }
   /* narrow glass: the hint wraps to two lines rather than running off it */
   @media (max-width: 520px) {
     #hint { font-size: 10px; letter-spacing: 0.05em; }
@@ -146,7 +165,8 @@
   @media (prefers-reduced-motion: reduce) {
     body, #stage::before, #cabinet, #hint-idle, #hint-live,
     body.frozen #stage::before, body.frozen #cabinet,
-    body.frozen #hint-idle, body.frozen #hint-live { transition: none; }
+    body.frozen #hint-idle, body.frozen #hint-live,
+    body.coaching #hint-idle, body.coaching #hint-live { transition: none; }
   }
 </style>
 </head>
@@ -157,14 +177,29 @@
     /* The shell speaks the same idiom the game does. A phone player has no
        click to give, and the ? chip is the one control worth pointing at
        before they have touched anything. Runs before the engine so the line
-       never flickers through the wrong wording. */
+       never flickers through the wrong wording.
+       A first visit -- nothing remembered, storage that will not answer, or
+       ?tutorial in the link -- is told instead what the first press does:
+       it starts a short practice, not a round. The returning line is kept
+       on the element, and the game puts it back once a practice has run. */
     (function () {
       try {
         var coarse = navigator.maxTouchPoints > 0
           && !(window.matchMedia && window.matchMedia('(pointer: fine)').matches);
-        if (coarse) {
-          document.getElementById('hint-idle').innerHTML =
-            'NEW HERE? TAP THE <b>?</b> CHIP, TOP RIGHT &nbsp;&middot;&nbsp; THE TAP IS THE CLOCK';
+        var idle = document.getElementById('hint-idle');
+        var back = coarse
+          ? 'NEW HERE? TAP THE <b>?</b> CHIP, TOP RIGHT &nbsp;&middot;&nbsp; THE TAP IS THE CLOCK'
+          : idle.innerHTML;
+        var first;
+        try { first = localStorage.getItem('gpOnboard') === null; } catch (e) { first = true; }
+        // the parameter itself, as game.js tests it: not any link that says "tutorial"
+        if (/[?&]tutorial(=|&|$)/.test(location.search)) first = true;
+        if (first) {
+          idle.dataset.after = back;
+          idle.innerHTML = 'FIRST TIME? <b>' + (coarse ? 'TAP' : 'CLICK')
+            + '</b> TO START &nbsp;&middot;&nbsp; A 1-MINUTE PRACTICE COMES FIRST';
+        } else if (coarse) {
+          idle.innerHTML = back;
         }
       } catch (e) {}
     })();
